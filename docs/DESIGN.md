@@ -34,7 +34,10 @@ The RAG Ingestion API is a scalable, multi-cloud document processing pipeline th
 
 ![Alt text](pipeline-flow.png)
 
-The five-stage pipeline processes documents sequentially: Extract converts documents to text, Chunk splits text into segments, Dedup removes duplicates, Embed generates vector embeddings, and Index stores vectors in MongoDB Atlas.
+![Alt text](pipeline-flow-2.png)
+
+
+The five-stage pipeline with Kafka queues between each phase: Job submission triggers extract-topic, each worker consumes from its topic, processes data, and publishes to the next topic. After indexing completes, an optional webhook notification is sent.
 
 ### Multi-Cloud System Architecture
 
