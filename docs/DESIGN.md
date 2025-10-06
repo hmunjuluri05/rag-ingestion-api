@@ -20,11 +20,11 @@ The RAG Ingestion API is a scalable, multi-cloud document processing pipeline th
 
 **Key Design Principles:**
 - Multi-cloud architecture (Azure + GCP with unified configuration)
-- Cloud-agnostic components with provider-specific adapters
+- Cloud-agnostic components with cloud provider specific adapters
 - Interface-driven design with factory pattern for cloud abstraction
 - Asynchronous processing via Kafka
-- Isolated infrastructure to prevent impact on search services
-- Horizontal scalability with Kubernetes (AKS/GKE)
+- Isolated ingestion infrastructure to prevent impact on search services
+- Horizontal scalability for ingestion pods with Kubernetes (AKS/GKE)
 
 ---
 
