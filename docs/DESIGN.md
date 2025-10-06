@@ -34,25 +34,37 @@ The RAG Ingestion API is a scalable, multi-cloud document processing pipeline th
 
 ![Alt text](pipeline-flow.png)
 
+The five-stage pipeline processes documents sequentially: Extract converts documents to text, Chunk splits text into segments, Dedup removes duplicates, Embed generates vector embeddings, and Index stores vectors in MongoDB Atlas.
+
 ### Multi-Cloud System Architecture
 
 ![Alt text](system-architecture.png)
+
+High-level view of the multi-cloud deployment showing FastAPI endpoints in both Azure (AKS) and GCP (GKE), with separate Kafka clusters and worker pods in each cloud, connecting to shared MongoDB Atlas for vector storage.
 
 ### Multi-Cloud Kubernetes Infrastructure
 
 ![Alt text](kubernetes.png)
 
+Detailed Kubernetes deployment showing AKS and GKE clusters with FastAPI API pods, ingestion worker pods, and isolated search API pods. Each cloud uses its native services: Azure Event Hubs, Blob Storage, and Redis Cache for Azure; GCP Managed Kafka, Cloud Storage, and Memorystore for GCP. Both connect to shared external services: MongoDB Atlas and Kong API Gateway.
+
 ### Multi-Cloud Storage Architecture
 
 ![Alt text](storage.png)
+
+Storage layer architecture showing how ingestion worker pods in each cloud interact with their respective storage services: Azure workers use Blob Storage and Redis Cache, while GCP workers use Cloud Storage and Memorystore. Both write vectors to the shared MongoDB Atlas database.
 
 ### Multi-Cloud Kafka Configuration
 
 ![Alt text](kafka.png)
 
+Kafka topic configuration for both clouds showing the five-stage pipeline topics (extract, chunk, dedup, embed, index) with partition counts. Azure uses Event Hubs Kafka-compatible service with 10-20 partitions per topic, while GCP uses Managed Kafka (Confluent) with identical partition configuration for consistency.
+
 ### Component Interaction - Sequence Diagram
 
 ![Alt text](sequence.png)
+
+End-to-end flow of a document ingestion request showing interactions between client, FastAPI, Kafka, worker pods, cloud storage (Blob/GCS), MongoDB Atlas, and Redis. Demonstrates job creation, asynchronous processing through pipeline stages, status updates, and optional webhook callbacks.
 
 ---
 
