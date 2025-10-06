@@ -817,7 +817,7 @@ topics:
     replication_factor: 3
 ```
 
-**Consumer Groups (Consistent across both clouds):**
+**Kafka Consumer Groups (Consistent across both clouds):**
 - `extractor-group`
 - `chunker-group`
 - `dedup-group`
