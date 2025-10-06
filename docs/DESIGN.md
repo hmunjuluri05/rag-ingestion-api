@@ -30,6 +30,24 @@ The RAG Ingestion API is a scalable, multi-cloud document processing pipeline th
 
 ## System Architecture
 
+### Pipeline Flow
+
+```mermaid
+flowchart LR
+    Doc[Document] --> Extract[Extract<br/>Text]
+    Extract --> Chunk[Chunk<br/>Segments]
+    Chunk --> Dedup[Dedup<br/>Unique]
+    Dedup --> Embed[Embed<br/>Vectors]
+    Embed --> Index[Index<br/>Vector DB]
+
+    style Doc fill:#A5D6A7,stroke:#388E3C,stroke-width:2px,color:#000
+    style Extract fill:#90CAF9,stroke:#1976D2,stroke-width:2px,color:#000
+    style Chunk fill:#CE93D8,stroke:#7B1FA2,stroke-width:2px,color:#000
+    style Dedup fill:#FFAB91,stroke:#E64A19,stroke-width:2px,color:#000
+    style Embed fill:#FFF59D,stroke:#F9A825,stroke-width:2px,color:#000
+    style Index fill:#A5D6A7,stroke:#388E3C,stroke-width:2px,color:#000
+```
+
 ### Multi-Cloud System Architecture
 
 ```mermaid
@@ -79,23 +97,6 @@ graph TB
     style MongoDB fill:#4DB33D,stroke:#13AA52,stroke-width:2px,color:#fff
 ```
 
-### Pipeline Flow
-
-```mermaid
-flowchart LR
-    Doc[Document] --> Extract[Extract<br/>Text]
-    Extract --> Chunk[Chunk<br/>Segments]
-    Chunk --> Dedup[Dedup<br/>Unique]
-    Dedup --> Embed[Embed<br/>Vectors]
-    Embed --> Index[Index<br/>Vector DB]
-
-    style Doc fill:#A5D6A7,stroke:#388E3C,stroke-width:2px,color:#000
-    style Extract fill:#90CAF9,stroke:#1976D2,stroke-width:2px,color:#000
-    style Chunk fill:#CE93D8,stroke:#7B1FA2,stroke-width:2px,color:#000
-    style Dedup fill:#FFAB91,stroke:#E64A19,stroke-width:2px,color:#000
-    style Embed fill:#FFF59D,stroke:#F9A825,stroke-width:2px,color:#000
-    style Index fill:#A5D6A7,stroke:#388E3C,stroke-width:2px,color:#000
-```
 
 ### Multi-Cloud Storage Architecture
 
@@ -423,10 +424,30 @@ sequenceDiagram
 
 ## Pipeline Components
 
-### 1. Extract Component
+## 1. Extract Component
 
 **Purpose:** Extract raw text from documents
 
+```mermaid
+flowchart TD
+    Start([Receive from<br/>extract-topic]) --> Download[Download Document<br/>Azure Blob / GCS]
+    Download --> Detect[Detect Format<br/>PDF/DOCX/HTML]
+    Detect --> Extract[Extract Text<br/>using unstructured]
+    Extract --> Clean{Clean Text?}
+    Clean -->|Yes| CleanOps[Remove whitespace<br/>HTML to Markdown]
+    Clean -->|No| Store
+    CleanOps --> Store[Store cleaned text<br/>Azure Blob / GCS]
+    Store --> Publish([Publish to<br/>chunk-topic])
+
+    style Start fill:#A5D6A7,stroke:#388E3C,stroke-width:2px,color:#000
+    style Download fill:#90CAF9,stroke:#1976D2,stroke-width:2px,color:#000
+    style Detect fill:#90CAF9,stroke:#1976D2,stroke-width:2px,color:#000
+    style Extract fill:#90CAF9,stroke:#1976D2,stroke-width:2px,color:#000
+    style Clean fill:#FFF59D,stroke:#F9A825,stroke-width:2px,color:#000
+    style CleanOps fill:#FFCC80,stroke:#EF6C00,stroke-width:2px,color:#000
+    style Store fill:#80DEEA,stroke:#00838F,stroke-width:2px,color:#000
+    style Publish fill:#A5D6A7,stroke:#388E3C,stroke-width:2px,color:#000
+```
 **Interface:**
 ```python
 from abc import ABC, abstractmethod
@@ -461,6 +482,25 @@ class IExtractor(ABC):
 
 **Purpose:** Split text into optimal-sized segments
 
+```mermaid
+flowchart TD
+    Start([Receive from<br/>chunk-topic]) --> Load[Load text from<br/>Azure Blob / GCS]
+    Load --> Strategy{Chunking<br/>Strategy}
+    Strategy -->|Recursive| Rec[RecursiveTextSplitter]
+    Strategy -->|Semantic| Sem[SemanticChunker]
+    Rec --> Store[Store chunks to<br/>Azure Blob / GCS]
+    Sem --> Store
+    Store --> Publish([Publish to<br/>dedup-topic])
+
+    style Start fill:#A5D6A7,stroke:#388E3C,stroke-width:2px,color:#000
+    style Load fill:#90CAF9,stroke:#1976D2,stroke-width:2px,color:#000
+    style Strategy fill:#FFF59D,stroke:#F9A825,stroke-width:2px,color:#000
+    style Rec fill:#CE93D8,stroke:#7B1FA2,stroke-width:2px,color:#000
+    style Sem fill:#CE93D8,stroke:#7B1FA2,stroke-width:2px,color:#000
+    style Store fill:#80DEEA,stroke:#00838F,stroke-width:2px,color:#000
+    style Publish fill:#A5D6A7,stroke:#388E3C,stroke-width:2px,color:#000
+```
+
 **Interface:**
 ```python
 @dataclass
@@ -488,6 +528,29 @@ class IChunker(ABC):
 
 **Purpose:** Remove duplicate chunks
 
+```mermaid
+flowchart TD
+    Start([Receive from<br/>dedup-topic]) --> Load[Load chunks from<br/>Azure Blob / GCS]
+    Load --> Enabled{Dedup<br/>Enabled?}
+    Enabled -->|No| Store
+    Enabled -->|Yes| Hash[Generate MinHash<br/>for each chunk]
+    Hash --> Check[Check Redis cache<br/>Azure / Memorystore]
+    Check --> Remove[Remove duplicates]
+    Remove --> Store[Store unique chunks<br/>Azure Blob / GCS]
+    Store --> Cache[Update Redis cache]
+    Cache --> Publish([Publish to<br/>embed-topic])
+
+    style Start fill:#A5D6A7,stroke:#388E3C,stroke-width:2px,color:#000
+    style Load fill:#90CAF9,stroke:#1976D2,stroke-width:2px,color:#000
+    style Enabled fill:#FFF59D,stroke:#F9A825,stroke-width:2px,color:#000
+    style Hash fill:#FFAB91,stroke:#E64A19,stroke-width:2px,color:#000
+    style Check fill:#FFAB91,stroke:#E64A19,stroke-width:2px,color:#000
+    style Remove fill:#FFAB91,stroke:#E64A19,stroke-width:2px,color:#000
+    style Store fill:#80DEEA,stroke:#00838F,stroke-width:2px,color:#000
+    style Cache fill:#FFAB91,stroke:#E64A19,stroke-width:2px,color:#000
+    style Publish fill:#A5D6A7,stroke:#388E3C,stroke-width:2px,color:#000
+```
+
 **Interface:**
 ```python
 @dataclass
@@ -509,6 +572,28 @@ class IDeduplicator(ABC):
 ### 4. Embed Component
 
 **Purpose:** Generate vector embeddings
+
+
+```mermaid
+flowchart TD
+    Start([Receive from<br/>embed-topic]) --> Load[Load chunks from<br/>Azure Blob / GCS]
+    Load --> Batch[Create batches<br/>100 chunks each]
+    Batch --> API[Call OpenAI<br/>embedding API]
+    API --> Rate{Rate<br/>Limited?}
+    Rate -->|Yes| Wait[Exponential<br/>backoff]
+    Wait --> API
+    Rate -->|No| Store[Store embeddings<br/>Azure Blob / GCS]
+    Store --> Publish([Publish to<br/>index-topic])
+
+    style Start fill:#A5D6A7,stroke:#388E3C,stroke-width:2px,color:#000
+    style Load fill:#90CAF9,stroke:#1976D2,stroke-width:2px,color:#000
+    style Batch fill:#90CAF9,stroke:#1976D2,stroke-width:2px,color:#000
+    style API fill:#FFF59D,stroke:#F9A825,stroke-width:2px,color:#000
+    style Rate fill:#FFF59D,stroke:#F9A825,stroke-width:2px,color:#000
+    style Wait fill:#FFCC80,stroke:#EF6C00,stroke-width:2px,color:#000
+    style Store fill:#80DEEA,stroke:#00838F,stroke-width:2px,color:#000
+    style Publish fill:#A5D6A7,stroke:#388E3C,stroke-width:2px,color:#000
+```
 
 **Interface:**
 ```python
@@ -533,6 +618,33 @@ class IEmbedder(ABC):
 ### 5. Index Component
 
 **Purpose:** Store embeddings in vector database
+
+
+```mermaid
+flowchart TD
+    Start([Receive from<br/>index-topic]) --> Load[Load embeddings<br/>Azure Blob / GCS]
+    Load --> Batch[Create batches<br/>100 vectors each]
+    Batch --> Insert[Insert to MongoDB Atlas<br/>with metadata & vectors]
+    Insert --> Success{Success?}
+    Success -->|No| Retry[Retry with<br/>backoff]
+    Success -->|Yes| Update[Update job status<br/>Azure Redis / Memorystore]
+    Retry --> Insert
+    Update --> Webhook{Callback<br/>URL?}
+    Webhook -->|Yes| Send[Send webhook<br/>notification]
+    Webhook -->|No| Complete
+    Send --> Complete([Job Complete])
+
+    style Start fill:#A5D6A7,stroke:#388E3C,stroke-width:2px,color:#000
+    style Load fill:#90CAF9,stroke:#1976D2,stroke-width:2px,color:#000
+    style Batch fill:#90CAF9,stroke:#1976D2,stroke-width:2px,color:#000
+    style Insert fill:#4DB33D,stroke:#13AA52,stroke-width:2px,color:#fff
+    style Success fill:#FFF59D,stroke:#F9A825,stroke-width:2px,color:#000
+    style Retry fill:#FFCC80,stroke:#EF6C00,stroke-width:2px,color:#000
+    style Update fill:#80DEEA,stroke:#00838F,stroke-width:2px,color:#000
+    style Webhook fill:#FFF59D,stroke:#F9A825,stroke-width:2px,color:#000
+    style Send fill:#90CAF9,stroke:#1976D2,stroke-width:2px,color:#000
+    style Complete fill:#A5D6A7,stroke:#388E3C,stroke-width:2px,color:#000
+```
 
 **Interface:**
 ```python
