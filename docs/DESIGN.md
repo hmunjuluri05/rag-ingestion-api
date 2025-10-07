@@ -18,6 +18,40 @@
 
 The RAG Ingestion API is a scalable, multi-cloud document processing pipeline that extracts, chunks, deduplicates, embeds, and indexes documents for retrieval-augmented generation (RAG) systems. The system is deployed across **Azure (AKS)** and **GCP (GKE)** with consistent architecture and configuration.
 
+### v1 vs v2 API Comparison
+
+| Aspect | v1 API (Current) | v2 API (New Design) |
+|--------|------------------|---------------------|
+| **Processing Model** | In-process background tasks (Starlette BackgroundTasks) | Distributed event-driven (Kafka-based) |
+| **Scalability** | Limited - all stages run in single container | Unlimited - each stage scales independently |
+| **Fault Tolerance** | Task failure = job failure, no retry | Kafka consumer retries + Dead Letter Queue |
+| **Resource Utilization** | Monolithic - one pod handles all stages | Optimized - dedicated worker pools per stage |
+| **Long-running Jobs** | Pod restart = job loss | Jobs survive pod restarts (state in Kafka + Redis) |
+| **Bottleneck Handling** | Cannot scale individual stages | Scale embedding workers independently from chunkers |
+| **Monitoring** | Limited visibility into pipeline stages | Stage-level metrics via Kafka consumer lag |
+| **Cost Efficiency** | Over-provisioned for peak load | Auto-scale based on actual workload per stage |
+| **Infrastructure Impact** | Shares resources with search API | Isolated ingestion infrastructure |
+| **Concurrency** | Limited by pod CPU/memory | Kafka partitions enable massive parallelism |
+
+### Limitations of v1 API
+
+1. **No Fault Recovery**: If a pod crashes mid-processing, the entire job is lost
+2. **Resource Contention**: Heavy ingestion jobs impact search API performance
+3. **Inefficient Scaling**: Must scale entire pipeline even if only embedding is slow
+4. **Memory Constraints**: Large documents can exhaust pod memory
+5. **Limited Observability**: No visibility into which stage is slow
+6. **Single Point of Failure**: One stage failure kills the entire job
+
+### Advantages of v2 API
+
+1. **Independent Scaling**: Scale embedders to 30 pods while keeping chunkers at 5 pods
+2. **Fault Tolerance**: Kafka retries failed messages automatically
+3. **Resource Isolation**: Ingestion workload doesn't affect search performance
+4. **Event Replay**: Reprocess failed jobs from any pipeline stage
+5. **Cost Optimization**: Scale down idle workers, use spot instances
+6. **Better Observability**: Monitor Kafka consumer lag per stage
+7. **Multi-Cloud Ready**: Deploy identical pipelines in Azure and GCP
+
 **Key Design Principles:**
 - Multi-cloud architecture (Azure + GCP with unified configuration)
 - Cloud-agnostic components with cloud provider specific adapters
