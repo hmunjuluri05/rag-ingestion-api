@@ -1,0 +1,32 @@
+PLAIN TEXT DOCUMENT - SIMPLE
+
+This is a simple plain text document for testing extraction capabilities.
+
+SECTION 1: INTRODUCTION
+Plain text files are the most basic document format. They contain no formatting,
+just raw text characters. This makes them easy to process but limits their
+ability to convey structure and styling.
+
+SECTION 2: ADVANTAGES
+- Universal compatibility
+- Small file size
+- Easy to parse and process
+- No proprietary formats
+
+SECTION 3: DISADVANTAGES
+- No formatting options
+- No embedded images
+- Limited structure representation
+- No styling capabilities
+
+SECTION 4: USE CASES
+Plain text is ideal for:
+1. Configuration files
+2. Log files
+3. Simple data storage
+4. Code source files
+5. Documentation
+
+CONCLUSION
+Despite its limitations, plain text remains a fundamental and widely-used
+document format in computing.

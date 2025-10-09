@@ -5,7 +5,10 @@
       "Bash(\"C:\\Program Files\\Pandoc\\pandoc.exe\" \"C:\\Users\\hanum\\projects\\rag-ingetion-api\\docs\\DESIGN.md\" -o \"C:\\Users\\hanum\\projects\\rag-ingetion-api\\docs\\DESIGN.docx\")",
       "Bash(where.exe:*)",
       "Bash($env:PATH -split ';')",
-      "Bash(Select-String -Pattern pandoc)"
+      "Bash(Select-String -Pattern pandoc)",
+      "WebSearch",
+      "Bash(python:*)",
+      "Bash(pip install:*)"
     ],
     "deny": [],
     "ask": []

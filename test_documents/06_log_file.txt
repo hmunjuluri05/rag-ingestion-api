@@ -1,0 +1,40 @@
+APPLICATION LOG FILE
+===================
+
+[2025-10-09 10:15:23] INFO: Application started successfully
+[2025-10-09 10:15:24] INFO: Loading configuration from config.yaml
+[2025-10-09 10:15:25] INFO: Database connection established
+[2025-10-09 10:15:26] INFO: Redis cache initialized
+[2025-10-09 10:15:27] INFO: API server listening on port 8000
+
+[2025-10-09 10:16:01] INFO: Received document extraction request
+[2025-10-09 10:16:01] DEBUG: File: document.pdf, Size: 2.5 MB
+[2025-10-09 10:16:02] INFO: Starting extraction with Unstructured library
+[2025-10-09 10:16:03] DEBUG: Extracted 45 elements
+[2025-10-09 10:16:03] INFO: Extraction completed in 1.23s
+
+[2025-10-09 10:17:30] WARNING: High memory usage detected: 85%
+[2025-10-09 10:17:31] INFO: Triggered garbage collection
+[2025-10-09 10:17:32] INFO: Memory usage reduced to 62%
+
+[2025-10-09 10:18:45] ERROR: Failed to connect to external API
+[2025-10-09 10:18:45] ERROR: Connection timeout after 30s
+[2025-10-09 10:18:46] INFO: Retrying with exponential backoff
+[2025-10-09 10:18:50] INFO: Connection successful on retry attempt 2
+
+[2025-10-09 10:20:00] INFO: Processing batch of 100 documents
+[2025-10-09 10:20:15] INFO: Batch processing: 25% complete
+[2025-10-09 10:20:30] INFO: Batch processing: 50% complete
+[2025-10-09 10:20:45] INFO: Batch processing: 75% complete
+[2025-10-09 10:21:00] INFO: Batch processing: 100% complete
+[2025-10-09 10:21:01] INFO: Total processing time: 61s
+[2025-10-09 10:21:01] INFO: Average time per document: 0.61s
+
+STATISTICS SUMMARY
+------------------
+Total Requests: 157
+Successful: 152
+Failed: 5
+Success Rate: 96.8%
+Average Response Time: 1.2s
+Peak Memory Usage: 85%
