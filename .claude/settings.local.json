@@ -8,7 +8,12 @@
       "Bash(Select-String -Pattern pandoc)",
       "WebSearch",
       "Bash(python:*)",
-      "Bash(pip install:*)"
+      "Bash(pip install:*)",
+      "Bash(uv init:*)",
+      "Bash(uv sync:*)",
+      "Bash(uv run:*)",
+      "Bash(uv add:*)",
+      "Bash(uv pip:*)"
     ],
     "deny": [],
     "ask": []

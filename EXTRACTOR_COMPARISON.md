@@ -4,17 +4,29 @@ This tool compares document extraction performance between **Unstructured** and 
 
 ## Installation
 
-### Install Required Libraries
+### Using UV (Recommended)
+
+This project uses [UV](https://docs.astral.sh/uv/) for dependency management.
 
 ```bash
-# For Unstructured
-pip install unstructured
-pip install "unstructured[pdf]"  # For PDF support
-pip install "unstructured[docx]"  # For DOCX support
+# Install all dependencies
+uv sync
 
-# For Azure Document Intelligence
-pip install langchain-community
-pip install azure-ai-documentintelligence
+# Install with optional OCR support
+uv sync --extra ocr
+
+# Install with development dependencies
+uv sync --extra dev
+```
+
+### Using pip (Alternative)
+
+```bash
+# Install the package with all dependencies
+pip install -e .
+
+# Or install dependencies manually
+pip install unstructured langchain-community azure-ai-documentintelligence
 ```
 
 ### Azure Document Intelligence Setup
@@ -36,24 +48,29 @@ set AZURE_DOCUMENT_INTELLIGENCE_KEY=your-api-key
 
 ## Usage
 
-### Basic Usage
+### Using UV (Recommended)
 
 ```bash
-python compare_extractors.py /path/to/documents/folder
-```
+# Basic usage
+uv run compare-extractors test_documents
 
-### Specify Output File
+# Specify output file
+uv run compare-extractors test_documents --output my_report.json
 
-```bash
-python compare_extractors.py /path/to/documents/folder --output my_report.json
-```
-
-### Provide Azure Credentials via CLI
-
-```bash
-python compare_extractors.py /path/to/documents/folder \
+# Provide Azure credentials via CLI
+uv run compare-extractors test_documents \
     --azure-endpoint "https://your-resource.cognitiveservices.azure.com/" \
     --azure-key "your-api-key"
+```
+
+### Using Python directly
+
+```bash
+# Basic usage
+python src/rag_ingetion_api/compare_extractors.py /path/to/documents/folder
+
+# With output file
+python src/rag_ingetion_api/compare_extractors.py /path/to/documents/folder --output my_report.json
 ```
 
 ## Output
@@ -144,7 +161,12 @@ The JSON report contains:
 
 ### "Unstructured library not available"
 
-Install unstructured with appropriate extras:
+Ensure dependencies are installed:
+```bash
+uv sync
+```
+
+Or with pip:
 ```bash
 pip install "unstructured[all-docs]"
 ```
@@ -155,14 +177,13 @@ Ensure environment variables are set or pass credentials via CLI arguments.
 
 ### Import Errors
 
-Make sure all dependencies are installed:
+Reinstall dependencies:
 ```bash
-pip install -r requirements.txt  # If you have a requirements file
-```
+# With UV
+uv sync
 
-Or install individually:
-```bash
-pip install unstructured langchain-community azure-ai-documentintelligence
+# With pip
+pip install -e .
 ```
 
 ## Performance Considerations
