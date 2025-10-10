@@ -16,6 +16,7 @@ from typing import Dict, List, Any, Optional
 from dataclasses import dataclass, asdict
 from datetime import datetime
 import argparse
+from dotenv import load_dotenv
 
 
 @dataclass
@@ -363,6 +364,9 @@ class DocumentExtractionComparator:
 
 def main():
     """CLI entry point"""
+    # Load environment variables from .env file
+    load_dotenv()
+
     parser = argparse.ArgumentParser(
         description="Compare Unstructured and Azure Document Intelligence extractors"
     )

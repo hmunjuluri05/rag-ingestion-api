@@ -224,23 +224,38 @@ uv lock --upgrade
 
 ## Environment Variables
 
+The project supports environment variables via a `.env` file. Copy the example and configure:
+
 ```bash
-# Azure Document Intelligence (optional)
+# Copy the example .env file
+cp .env.example .env
+
+# Edit .env with your credentials
+```
+
+Available environment variables:
+
+```bash
+# Azure Document Intelligence (for extraction comparison)
 AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT="https://your-resource.cognitiveservices.azure.com/"
 AZURE_DOCUMENT_INTELLIGENCE_KEY="your-api-key"
 
-# Azure Blob Storage (for production)
+# Azure Blob Storage (for production RAG pipeline)
 AZURE_STORAGE_ACCOUNT="your-storage-account"
 AZURE_STORAGE_KEY="your-storage-key"
 
-# GCP Storage (for production)
+# GCP Storage (for production RAG pipeline)
 GCP_PROJECT_ID="your-project-id"
 GCP_STORAGE_BUCKET="your-bucket-name"
 
-# Redis/Celery (for production)
+# Redis/Celery (for production RAG pipeline)
 REDIS_HOST="your-redis-host"
 REDIS_PORT="6379"
+CELERY_BROKER_URL="redis://localhost:6379/0"
+CELERY_RESULT_BACKEND="redis://localhost:6379/0"
 ```
+
+The comparison tool automatically loads variables from `.env` using `python-dotenv`.
 
 ## Deployment
 

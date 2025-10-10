@@ -33,18 +33,36 @@ pip install unstructured langchain-community azure-ai-documentintelligence
 
 1. Create an Azure Document Intelligence resource in Azure Portal
 2. Get your endpoint and API key
-3. Set environment variables:
+3. Configure credentials using one of these methods:
+
+**Option 1: Using .env file (Recommended)**
+
+Create a `.env` file in the project root:
 
 ```bash
-export AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT="https://your-resource.cognitiveservices.azure.com/"
-export AZURE_DOCUMENT_INTELLIGENCE_KEY="your-api-key"
+# Copy the example file
+cp .env.example .env
+
+# Edit .env and add your credentials
+AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT=https://your-resource.cognitiveservices.azure.com/
+AZURE_DOCUMENT_INTELLIGENCE_KEY=your-api-key
 ```
 
-Or on Windows:
-```cmd
+**Option 2: Using environment variables**
+
+```bash
+# Linux/Mac
+export AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT="https://your-resource.cognitiveservices.azure.com/"
+export AZURE_DOCUMENT_INTELLIGENCE_KEY="your-api-key"
+
+# Windows
 set AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT=https://your-resource.cognitiveservices.azure.com/
 set AZURE_DOCUMENT_INTELLIGENCE_KEY=your-api-key
 ```
+
+**Option 3: Using command-line arguments**
+
+Pass credentials directly when running the tool (see Usage section below).
 
 ## Usage
 
