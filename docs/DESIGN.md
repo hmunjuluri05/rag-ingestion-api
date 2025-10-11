@@ -18,10 +18,10 @@
 
 The RAG Ingestion API is a scalable, multi-cloud document processing pipeline that extracts and chunks documents for retrieval-augmented generation (RAG) systems. The system is deployed across **Azure (AKS)** and **GCP (GKE)** with consistent architecture and configuration.
 
-### v1 vs v2 API Comparison
+### Current vs New API Comparison
 
-| Aspect | v1 API (Current) | v2 API (New Design) |
-|--------|------------------|---------------------|
+| Aspect | Current | New Design |
+|--------|---------|------------|
 | **Processing Model** | In-process background tasks (Starlette BackgroundTasks) | Distributed task queue (Celery-based) |
 | **Scalability** | Limited - all stages run in single container | Independent - each stage scales separately via worker pools |
 | **Fault Tolerance** | Task failure = job failure, no retry | Celery automatic retries + task failure handling |
@@ -34,7 +34,7 @@ The RAG Ingestion API is a scalable, multi-cloud document processing pipeline th
 | **Concurrency** | Limited by pod CPU/memory | Celery worker pools enable high parallelism |
 | **Document Storage** | Local pod storage, deleted after processing | Permanent storage in Object Storage (Blob/GCS) for reprocessing and archival |
 
-### Limitations of v1 API
+### Limitations of Current API
 
 1. **No Fault Recovery**: If a pod crashes mid-processing, the entire job is lost
 2. **Resource Contention**: Heavy ingestion jobs can impact API responsiveness for all endpoints
@@ -47,7 +47,7 @@ The RAG Ingestion API is a scalable, multi-cloud document processing pipeline th
    - No archival for compliance or audit requirements
    - Lost if processing fails before completion
 
-### Advantages of v2 API
+### Advantages of New API
 
 1. **Simple Scaling**: Scale unified workers from 2 to 10 pods based on queue depth
 2. **Fault Tolerance**: Celery automatic retries with exponential backoff
