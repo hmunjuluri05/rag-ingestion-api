@@ -16,7 +16,7 @@
 
 ## Introduction
 
-The RAG Ingestion API is a scalable, multi-cloud document processing pipeline that extracts, chunks, deduplicates, embeds, and indexes documents for retrieval-augmented generation (RAG) systems. The system is deployed across **Azure (AKS)** and **GCP (GKE)** with consistent architecture and configuration.
+The RAG Ingestion API is a scalable, multi-cloud document processing pipeline that extracts and chunks documents for retrieval-augmented generation (RAG) systems. The system is deployed across **Azure (AKS)** and **GCP (GKE)** with consistent architecture and configuration.
 
 ### v1 vs v2 API Comparison
 
@@ -30,270 +30,131 @@ The RAG Ingestion API is a scalable, multi-cloud document processing pipeline th
 | **Bottleneck Handling** | Cannot scale individual stages | Scale chunking workers independently from extractors |
 | **Monitoring** | Limited visibility into pipeline stages | Stage-level metrics via Celery Flower dashboard |
 | **Cost Efficiency** | Over-provisioned for peak load | Auto-scale based on queue length per stage |
-| **Infrastructure Impact** | Shares resources with search API | Isolated ingestion worker infrastructure |
+| **Infrastructure Impact** | API pods handle both search and ingestion | Dedicated Celery worker pods for ingestion pipeline |
 | **Concurrency** | Limited by pod CPU/memory | Celery worker pools enable high parallelism |
+| **Document Storage** | Local pod storage, deleted after processing | Permanent storage in Object Storage (Blob/GCS) for reprocessing and archival |
 
 ### Limitations of v1 API
 
 1. **No Fault Recovery**: If a pod crashes mid-processing, the entire job is lost
-2. **Resource Contention**: Heavy ingestion jobs impact search API performance
-3. **Inefficient Scaling**: Must scale entire pipeline even if only chunking is slow
+2. **Resource Contention**: Heavy ingestion jobs can impact API responsiveness for all endpoints
+3. **Inefficient Scaling**: Must scale entire API pod even if only ingestion is heavy
 4. **Memory Constraints**: Large documents can exhaust pod memory
-5. **Limited Observability**: No visibility into which stage is slow
+5. **Limited Observability**: No visibility into which pipeline stage is slow
 6. **Single Point of Failure**: One stage failure kills the entire job
+7. **No Permanent Document Storage**: Files stored locally in pod storage and deleted after processing
+   - Cannot reprocess documents without re-uploading
+   - No archival for compliance or audit requirements
+   - Lost if processing fails before completion
 
 ### Advantages of v2 API
 
-1. **Independent Scaling**: Scale chunking workers to 20 pods while keeping extractors at 5 pods
+1. **Simple Scaling**: Scale unified workers from 2 to 10 pods based on queue depth
 2. **Fault Tolerance**: Celery automatic retries with exponential backoff
-3. **Resource Isolation**: Ingestion worker pods don't affect search performance
+3. **Resource Isolation**: Ingestion processing offloaded to dedicated Celery worker pods
 4. **Task Replay**: Reprocess failed tasks from any pipeline stage
 5. **Cost Optimization**: Scale down idle workers, use spot instances
 6. **Better Observability**: Monitor task queues via Celery Flower
 7. **Multi-Cloud Ready**: Deploy identical pipelines in Azure and GCP
+8. **API Responsiveness**: FastAPI pods only dispatch tasks, heavy processing in workers
+9. **Permanent Document Storage**: Original files stored permanently in Object Storage (Azure Blob/GCS)
+   - Reprocess documents anytime without re-uploading
+   - Archival for compliance, audit, and legal requirements
+   - Documents survive pod crashes and can be reprocessed with different configurations
 
 **Key Design Principles:**
 - Multi-cloud architecture (Azure + GCP with unified configuration)
 - Cloud-agnostic components with cloud provider specific adapters
 - Interface-driven design with factory pattern for cloud abstraction
 - Asynchronous processing via Celery task queues
-- Isolated ingestion worker infrastructure to prevent impact on search services
+- Dedicated Celery worker pods for heavy processing (separate from API pods)
 - Horizontal scalability for Celery worker pods with Kubernetes (AKS/GKE)
 
 ---
 
 ## System Architecture
 
-### Pipeline Flow
-
-```mermaid
-flowchart LR
-    Start([Job Submitted<br/>API Request]) --> ExtractQ["📬 extract_task<br/>Celery Queue"]
-    ExtractQ --> Extract["🔍 Extract Worker<br/>Document to Text<br/>unstructured library"]
-    Extract --> ChunkQ["📬 chunk_task<br/>Celery Queue"]
-    ChunkQ --> Chunk["✂️ Chunk Worker<br/>Text Segmentation<br/>LangChain splitter"]
-    Chunk --> DedupQ["📬 dedup_task<br/>Celery Queue"]
-    DedupQ --> Dedup["🔄 Dedup Worker<br/>Remove Duplicates<br/>MinHash + Redis"]
-    Dedup --> Complete([✅ Job Completed<br/>Webhook Notification])
-
-    style Start fill:#A5D6A7,stroke:#388E3C,stroke-width:3px,color:#000
-    style Complete fill:#A5D6A7,stroke:#388E3C,stroke-width:3px,color:#000
-
-    style ExtractQ fill:#FFE082,stroke:#F57C00,stroke-width:3px,color:#000
-    style ChunkQ fill:#FFE082,stroke:#F57C00,stroke-width:3px,color:#000
-    style DedupQ fill:#FFE082,stroke:#F57C00,stroke-width:3px,color:#000
-
-    style Extract fill:#90CAF9,stroke:#1976D2,stroke-width:3px,color:#000
-    style Chunk fill:#CE93D8,stroke:#7B1FA2,stroke-width:3px,color:#000
-    style Dedup fill:#FFAB91,stroke:#E64A19,stroke-width:3px,color:#000
-```
-
-The three-stage pipeline with Celery task queues: Job submission triggers extract_task, each Celery worker processes its task, stores results in cloud storage (Azure Blob/GCS), and chains to the next task. After deduplication completes, an optional webhook notification is sent.
-
-### Multi-Cloud System Architecture
+### Multi-Cloud Architecture Overview
 
 ```mermaid
 graph TB
-    Client[Client Application]
+    Client["Client Application  "]
 
-    subgraph Azure ["AZURE CLOUD"]
-        API_AKS[FastAPI API<br/>AKS]
-        Redis_Azure[Redis Cache<br/>Celery Broker]
-        Workers_AKS[Celery Worker Pods<br/>Extract, Chunk, Dedup]
-        Storage_Azure[Azure Blob Storage<br/>Documents & Chunks]
+    subgraph Azure["  AZURE CLOUD  "]
+        subgraph AKS["  Azure Kubernetes Service - AKS  "]
+            API_A["  FastAPI API Pods  "]
+            Workers_A["  Ingestion Workers - Celery  <br/>  Replicas: 2-10  "]
+        end
+        Redis_A["  Azure Cache for Redis  <br/>  Celery Broker and Job Status  "]
+        Blob_A["  Azure Blob Storage  <br/>  Original Documents  "]
+        MongoDB_A["  MongoDB  <br/>  Chunks and Metadata  "]
     end
 
-    subgraph GCP ["GOOGLE CLOUD PLATFORM"]
-        API_GKE[FastAPI API<br/>GKE]
-        Redis_GCP[Memorystore Redis<br/>Celery Broker]
-        Workers_GKE[Celery Worker Pods<br/>Extract, Chunk, Dedup]
-        Storage_GCP[GCS<br/>Documents & Chunks]
+    subgraph GCP["  GOOGLE CLOUD PLATFORM  "]
+        subgraph GKE["  Google Kubernetes Engine - GKE  "]
+            API_G["  FastAPI API Pods  "]
+            Workers_G["  Ingestion Workers - Celery  <br/>  Replicas: 2-10  "]
+        end
+        Redis_G["  GCP Memorystore Redis  <br/>  Celery Broker and Job Status  "]
+        GCS_G["  Google Cloud Storage  <br/>  Original Documents  "]
+        MongoDB_G["  MongoDB  <br/>  Chunks and Metadata  "]
     end
 
-    Client -->|Upload File| API_AKS
-    Client -->|Upload File| API_GKE
+    Client -->|POST /api/v2/ingest| API_A
+    Client -->|POST /api/v2/ingest| API_G
 
-    API_AKS -->|Queue Tasks| Redis_Azure
-    API_GKE -->|Queue Tasks| Redis_GCP
+    API_A -->|Dispatch ingest_task| Redis_A
+    Redis_A -->|Consume| Workers_A
 
-    Redis_Azure -->|Consume| Workers_AKS
-    Redis_GCP -->|Consume| Workers_GKE
+    API_A -->|Upload document| Blob_A
+    Workers_A -->|Download document| Blob_A
+    Workers_A -->|Store chunks| MongoDB_A
 
-    Workers_AKS -->|Store Results| Storage_Azure
-    Workers_GKE -->|Store Results| Storage_GCP
+    API_G -->|Dispatch ingest_task| Redis_G
+    Redis_G -->|Consume| Workers_G
 
-    Workers_AKS -->|Update Status| Redis_Azure
-    Workers_GKE -->|Update Status| Redis_GCP
+    API_G -->|Upload document| GCS_G
+    Workers_G -->|Download document| GCS_G
+    Workers_G -->|Store chunks| MongoDB_G
 
-    style Client fill:#90CAF9,stroke:#1976D2,stroke-width:2px,color:#000
-    style API_AKS fill:#0078D4,stroke:#004578,stroke-width:2px,color:#fff
-    style API_GKE fill:#4285F4,stroke:#1967D2,stroke-width:2px,color:#fff
-    style Redis_Azure fill:#DC382D,stroke:#A41E11,stroke-width:2px,color:#fff
-    style Redis_GCP fill:#DC382D,stroke:#A41E11,stroke-width:2px,color:#fff
-    style Workers_AKS fill:#50E6FF,stroke:#0078D4,stroke-width:2px,color:#000
-    style Workers_GKE fill:#AECBFA,stroke:#4285F4,stroke-width:2px,color:#000
-    style Storage_Azure fill:#0078D4,stroke:#004578,stroke-width:2px,color:#fff
-    style Storage_GCP fill:#4285F4,stroke:#1967D2,stroke-width:2px,color:#fff
+    style Client fill:#1E88E5,stroke:#0D47A1,stroke-width:4px,color:#FFFFFF
+    style Azure fill:#E3F2FD,stroke:#1565C0,stroke-width:3px
+    style AKS fill:#BBDEFB,stroke:#1976D2,stroke-width:2px
+    style API_A fill:#42A5F5,stroke:#1565C0,stroke-width:2px,color:#FFFFFF
+    style Workers_A fill:#1E88E5,stroke:#0D47A1,stroke-width:2px,color:#FFFFFF
+    style Redis_A fill:#EF5350,stroke:#C62828,stroke-width:2px,color:#FFFFFF
+    style Blob_A fill:#29B6F6,stroke:#0277BD,stroke-width:2px,color:#FFFFFF
+    style MongoDB_A fill:#4DB33D,stroke:#13AA52,stroke-width:2px,color:#FFFFFF
+    style GCP fill:#E8F5E9,stroke:#2E7D32,stroke-width:3px
+    style GKE fill:#C8E6C9,stroke:#388E3C,stroke-width:2px
+    style API_G fill:#66BB6A,stroke:#2E7D32,stroke-width:2px,color:#FFFFFF
+    style Workers_G fill:#43A047,stroke:#1B5E20,stroke-width:2px,color:#FFFFFF
+    style Redis_G fill:#EF5350,stroke:#C62828,stroke-width:2px,color:#FFFFFF
+    style GCS_G fill:#9CCC65,stroke:#558B2F,stroke-width:2px,color:#FFFFFF
+    style MongoDB_G fill:#4DB33D,stroke:#13AA52,stroke-width:2px,color:#FFFFFF
 ```
 
-High-level view of the multi-cloud deployment showing FastAPI endpoints in both Azure (AKS) and GCP (GKE), with Redis-backed Celery queues and worker pods in each cloud, storing processed chunks in cloud storage (Azure Blob/GCS).
+**Complete multi-cloud deployment architecture** showing:
+- **Client Layer**: Applications submit jobs via REST API
+- **API Layer**: FastAPI pods (3-10 replicas) handle both search and ingestion endpoints
+- **Task Queue**: Redis-backed Celery with single queue (`ingest_queue`)
+  - **Azure**: Azure Cache for Redis
+  - **GCP**: GCP Memorystore (Redis)
+- **Worker Pool**: Unified ingestion workers (2-10 pods) handle complete pipeline
+- **Hybrid Storage**:
+  - **Object Storage** (Azure Blob / GCS): Original documents stored permanently
+  - **MongoDB**: Chunks with metadata, searchable and queryable
+- **Processing Flow**:
+  1. API uploads document to Object Storage and dispatches `ingest_task`
+  2. Worker downloads document, extracts+cleans text, chunks it, stores to MongoDB
+  3. Worker updates job status to completed
+- **Multi-Cloud**: Identical architecture deployed on Azure (AKS + Redis + Blob + MongoDB) and GCP (GKE + Memorystore + GCS + MongoDB)
 
-### Multi-Cloud Kubernetes Infrastructure
-
-```mermaid
-graph TB
-    subgraph Azure ["AZURE CLOUD"]
-        direction LR
-
-        AKS_Cluster[AKS Cluster<br/>rag-ingestion namespace]
-        API_Pods_A[FastAPI API Pods<br/>File Upload Endpoint]
-        Worker_Pods_A[Celery Worker Pods<br/>Extract, Chunk, Dedup Workers]
-        Search_Pods_A[Search API<br/>ISOLATED Namespace]
-
-        Redis_A[Azure Redis Cache<br/>Celery Broker + Backend]
-        Blob_A[Azure Blob Storage<br/>Documents & Chunks]
-
-        AKS_Cluster --> API_Pods_A
-        AKS_Cluster --> Worker_Pods_A
-        AKS_Cluster -.->|Isolated| Search_Pods_A
-
-        API_Pods_A -->|Queue Tasks| Redis_A
-        Worker_Pods_A -->|Consume Tasks| Redis_A
-        Worker_Pods_A -->|Store Files| Blob_A
-        API_Pods_A -->|Upload Files| Blob_A
-    end
-
-    subgraph GCP ["GOOGLE CLOUD PLATFORM"]
-        direction LR
-
-        GKE_Cluster[GKE Cluster<br/>rag-ingestion namespace]
-        API_Pods_G[FastAPI API Pods<br/>File Upload Endpoint]
-        Worker_Pods_G[Celery Worker Pods<br/>Extract, Chunk, Dedup Workers]
-        Search_Pods_G[Search API<br/>ISOLATED Namespace]
-
-        Redis_G[GCP Memorystore<br/>Celery Broker + Backend]
-        GCS_G[Google Cloud Storage<br/>Documents & Chunks]
-
-        GKE_Cluster --> API_Pods_G
-        GKE_Cluster --> Worker_Pods_G
-        GKE_Cluster -.->|Isolated| Search_Pods_G
-
-        API_Pods_G -->|Queue Tasks| Redis_G
-        Worker_Pods_G -->|Consume Tasks| Redis_G
-        Worker_Pods_G -->|Store Files| GCS_G
-        API_Pods_G -->|Upload Files| GCS_G
-    end
-
-    style AKS_Cluster fill:#0078D4,stroke:#004578,stroke-width:3px,color:#fff
-    style GKE_Cluster fill:#4285F4,stroke:#1967D2,stroke-width:3px,color:#fff
-
-    style API_Pods_A fill:#50E6FF,stroke:#0078D4,stroke-width:2px,color:#000
-    style Worker_Pods_A fill:#50E6FF,stroke:#0078D4,stroke-width:2px,color:#000
-    style Search_Pods_A fill:#EF9A9A,stroke:#C62828,stroke-width:2px,color:#000
-
-    style API_Pods_G fill:#AECBFA,stroke:#4285F4,stroke-width:2px,color:#000
-    style Worker_Pods_G fill:#AECBFA,stroke:#4285F4,stroke-width:2px,color:#000
-    style Search_Pods_G fill:#EF9A9A,stroke:#C62828,stroke-width:2px,color:#000
-
-    style Redis_A fill:#DC382D,stroke:#A41E11,stroke-width:3px,color:#fff
-    style Blob_A fill:#0078D4,stroke:#004578,stroke-width:2px,color:#fff
-
-    style Redis_G fill:#DC382D,stroke:#A41E11,stroke-width:3px,color:#fff
-    style GCS_G fill:#4285F4,stroke:#1967D2,stroke-width:2px,color:#fff
-```
-
-Detailed Kubernetes deployment showing AKS and GKE clusters with FastAPI API pods, Celery ingestion worker pods, and isolated search API pods. Each cloud uses its native services: Azure Blob Storage and Redis Cache for Azure; GCS and Memorystore for GCP. Redis serves as both Celery broker and result backend.
-
-### Multi-Cloud Storage Architecture
-
-```mermaid
-graph TB
-    subgraph "Azure Storage"
-        Workers_A[Celery Worker Pods<br/>AKS]
-        Blob[(Azure Blob Storage<br/>Documents & Chunks)]
-        Redis_A[(Azure Redis Cache<br/>Task Queue + Results)]
-    end
-
-    subgraph "GCP Storage"
-        Workers_G[Celery Worker Pods<br/>GKE]
-        GCS[(Google Cloud Storage<br/>Documents & Chunks)]
-        Memorystore[(GCP Memorystore<br/>Task Queue + Results)]
-    end
-
-    Workers_A -->|Store documents/chunks| Blob
-    Workers_A -->|Queue tasks & status| Redis_A
-    Workers_A -->|Read tasks| Redis_A
-
-    Workers_G -->|Store documents/chunks| GCS
-    Workers_G -->|Queue tasks & status| Memorystore
-    Workers_G -->|Read tasks| Memorystore
-
-    style Workers_A fill:#50E6FF,stroke:#0078D4,stroke-width:2px,color:#000
-    style Workers_G fill:#AECBFA,stroke:#4285F4,stroke-width:2px,color:#000
-    style Blob fill:#0078D4,stroke:#004578,stroke-width:2px,color:#fff
-    style GCS fill:#4285F4,stroke:#1967D2,stroke-width:2px,color:#fff
-    style Redis_A fill:#DC382D,stroke:#A41E11,stroke-width:3px,color:#fff
-    style Memorystore fill:#DC382D,stroke:#A41E11,stroke-width:3px,color:#fff
-```
-
-Storage layer architecture showing how Celery ingestion worker pods in each cloud interact with their respective storage services: Azure workers use Blob Storage for documents/chunks and Redis Cache for task queues, while GCP workers use Cloud Storage for documents/chunks and Memorystore for task queues.
-
-### Multi-Cloud Celery Configuration
-
-```mermaid
-graph TD
-    subgraph Azure ["Azure - Celery with Redis Cache"]
-        direction TB
-        API_Azure[FastAPI API<br/>AKS Cluster]
-
-        Redis_Broker_A[Redis Cache<br/>Celery Broker]
-
-        Extract_Workers_A[Extract Workers<br/>Pods: 2-20]
-        Chunk_Workers_A[Chunk Workers<br/>Pods: 2-15]
-        Dedup_Workers_A[Dedup Workers<br/>Pods: 2-10]
-
-        API_Azure -->|Dispatch extract_task| Redis_Broker_A
-        Redis_Broker_A -->|Consume| Extract_Workers_A
-        Extract_Workers_A -->|Chain chunk_task| Redis_Broker_A
-        Redis_Broker_A -->|Consume| Chunk_Workers_A
-        Chunk_Workers_A -->|Chain dedup_task| Redis_Broker_A
-        Redis_Broker_A -->|Consume| Dedup_Workers_A
-    end
-
-    subgraph GCP ["GCP - Celery with Memorystore"]
-        direction TB
-        API_GCP[FastAPI API<br/>GKE Cluster]
-
-        Redis_Broker_G[Memorystore Redis<br/>Celery Broker]
-
-        Extract_Workers_G[Extract Workers<br/>Pods: 2-20]
-        Chunk_Workers_G[Chunk Workers<br/>Pods: 2-15]
-        Dedup_Workers_G[Dedup Workers<br/>Pods: 2-10]
-
-        API_GCP -->|Dispatch extract_task| Redis_Broker_G
-        Redis_Broker_G -->|Consume| Extract_Workers_G
-        Extract_Workers_G -->|Chain chunk_task| Redis_Broker_G
-        Redis_Broker_G -->|Consume| Chunk_Workers_G
-        Chunk_Workers_G -->|Chain dedup_task| Redis_Broker_G
-        Redis_Broker_G -->|Consume| Dedup_Workers_G
-    end
-
-    style API_Azure fill:#0078D4,stroke:#004578,stroke-width:3px,color:#fff
-    style API_GCP fill:#4285F4,stroke:#1967D2,stroke-width:3px,color:#fff
-
-    style Redis_Broker_A fill:#DC382D,stroke:#A41E11,stroke-width:3px,color:#fff
-    style Redis_Broker_G fill:#DC382D,stroke:#A41E11,stroke-width:3px,color:#fff
-
-    style Extract_Workers_A fill:#90CAF9,stroke:#1976D2,stroke-width:2px,color:#000
-    style Chunk_Workers_A fill:#CE93D8,stroke:#7B1FA2,stroke-width:2px,color:#000
-    style Dedup_Workers_A fill:#FFAB91,stroke:#E64A19,stroke-width:2px,color:#000
-
-    style Extract_Workers_G fill:#90CAF9,stroke:#1976D2,stroke-width:2px,color:#000
-    style Chunk_Workers_G fill:#CE93D8,stroke:#7B1FA2,stroke-width:2px,color:#000
-    style Dedup_Workers_G fill:#FFAB91,stroke:#E64A19,stroke-width:2px,color:#000
-```
-
-Celery task queue configuration for both clouds showing the three-stage pipeline (extract_task, chunk_task, dedup_task). Azure uses Redis Cache as broker, while GCP uses Memorystore Redis. Workers scale independently based on queue depth and CPU utilization.
+**Key Design Decisions:**
+- **Documents in Object Storage**: 10x cheaper than MongoDB, built for large files, permanent archival
+- **Chunks in MongoDB**: Rich querying, metadata filtering, indexes for fast RAG retrieval
+- **No local storage**: v1 API stored files locally and deleted after processing - v2 stores permanently in cloud
+- **Document cleaning**: Automatically performed by Unstructured library during extraction
 
 ### Component Interaction - Sequence Diagram
 
@@ -302,50 +163,40 @@ sequenceDiagram
     autonumber
     participant Client
     participant API as FastAPI
-    participant Redis as Redis<br/>(Celery Broker)
-    participant Extract as Extract Worker
-    participant Storage as Cloud Storage<br/>(Blob/GCS)
-    participant Chunk as Chunk Worker
-    participant Dedup as Dedup Worker
+    participant Redis as Redis (Celery Broker)
+    participant Worker as Ingestion Worker
+    participant BlobStorage as Object Storage (Blob/GCS)
+    participant MongoDB as MongoDB
 
-    Client->>API: POST /api/v2/ingest<br/>(multipart file upload)
-    API->>Storage: Upload document file
-    API->>Redis: Queue extract_task(job_id, file_path)
+    Client->>API: POST /api/v2/ingest (multipart file upload)
+    API->>BlobStorage: Upload document file permanently
+    API->>Redis: Queue ingest_task(job_id, file_path, config)
     API->>Redis: Set job status: queued
     API-->>Client: 202 {job_id, status: queued}
 
-    Redis->>Extract: Consume extract_task
-    Extract->>Storage: Download document
-    Extract->>Extract: Extract text using strategies
-    Extract->>Storage: Store extracted text
-    Extract->>Redis: Update job status: extracting
-    Extract->>Redis: Chain chunk_task(job_id, text_path)
-
-    Redis->>Chunk: Consume chunk_task
-    Chunk->>Storage: Load extracted text
-    Chunk->>Chunk: Split into chunks
-    Chunk->>Storage: Store chunks
-    Chunk->>Redis: Update job status: chunking
-    Chunk->>Redis: Chain dedup_task(job_id, chunks_path)
-
-    Redis->>Dedup: Consume dedup_task
-    Dedup->>Storage: Load chunks
-    Dedup->>Redis: Check hash cache
-    Dedup->>Dedup: Remove duplicates
-    Dedup->>Storage: Store unique chunks
-    Dedup->>Redis: Update hash cache
-    Dedup->>Redis: Set job status: completed
+    Redis->>Worker: Consume ingest_task
+    Worker->>Redis: Update job status: processing
+    Worker->>BlobStorage: Download document
+    Worker->>Worker: Extract text (with auto-cleaning)
+    Worker->>Worker: Split text into chunks with metadata
+    Worker->>MongoDB: Store chunks with indexes
+    Worker->>Redis: Set job status: completed
 
     opt Webhook configured
-        Dedup->>Client: POST callback_url<br/>{job_id, status: completed}
+        Worker->>Client: POST callback_url {job_id, status: completed}
     end
 
     Client->>API: GET /api/v2/jobs/{job_id}
     API->>Redis: Read job status
     API-->>Client: {status, progress, stats}
+
+    Note over BlobStorage: Documents stored permanently<br/>for archival and reprocessing
+    Note over MongoDB: Chunks stored with metadata<br/>for fast RAG retrieval
 ```
 
-End-to-end flow of a document ingestion request showing interactions between client, FastAPI, Celery tasks, worker pods, cloud storage (Blob/GCS), and Redis. Demonstrates job creation, file upload, asynchronous task chaining through pipeline stages, status updates, and optional webhook callbacks.
+End-to-end flow of a document ingestion request showing interactions between client, FastAPI, unified Celery worker, cloud storage (Blob/GCS), MongoDB, and Redis. Demonstrates job creation, file upload, atomic processing (extract → chunk → store in single task), status updates, and optional webhook callbacks.
+
+**Note:** The worker performs extraction (with automatic cleaning by Unstructured library) and chunking as a single atomic operation, ensuring either the entire job succeeds or fails together.
 
 ---
 
@@ -357,20 +208,21 @@ End-to-end flow of a document ingestion request showing interactions between cli
 - Celery task dispatcher for async job submission
 
 **Layer 2: Task Queue (Celery + Redis)**
-- Queues: `extract_task`, `chunk_task`, `dedup_task`
-- Task chaining for sequential processing
+- Single queue: `ingest_queue`
+- Atomic task processing (extract → chunk → store)
 - Automatic retries with exponential backoff
 
 **Layer 3: Worker Pool (Kubernetes - AKS/GKE)**
-- Dedicated Celery worker pods for each pipeline step
+- Unified Celery worker pods (2-10 replicas)
 - Auto-scaling based on queue length + CPU
-- Independent scaling per task type
+- Handles complete ingestion pipeline in single task
 - Identical deployments across AKS and GKE
 
 **Layer 4: Storage (Cloud-specific with unified interface)**
-- Object Storage: Azure Blob Storage (AKS) / GCS (GKE)
-- Task Broker/Backend: Azure Redis Cache (AKS) / GCP Memorystore (GKE)
+- Object Storage: Azure Blob Storage (AKS) / Google Cloud Storage (GKE)
+- Task Broker/Backend: Azure Cache for Redis (AKS) / GCP Memorystore Redis (GKE)
 - Job State: Redis for task status and progress tracking
+- Chunk Storage: MongoDB for queryable chunks with metadata
 
 ---
 
@@ -385,43 +237,58 @@ End-to-end flow of a document ingestion request showing interactions between cli
 **Content-Type:** `multipart/form-data`
 
 **Request Parameters:**
-- `file`: UploadFile (required) - Document file to process
-- `config`: JSON string (optional) - Processing configuration
-- `metadata`: JSON string (optional) - Document metadata
-- `callback_url`: string (optional) - Webhook URL for completion notification
 
-**Example using Python:**
-```python
-import requests
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `file` | File (UploadFile) | **Yes** | Document file to process (PDF, DOCX, HTML, etc.) |
+| `config` | JSON string | No | Processing configuration (extraction library, chunking strategy) |
+| `metadata` | JSON string | No | Custom document metadata (key-value pairs) |
+| `callback_url` | String (URL) | No | Webhook URL for job completion notification |
 
-files = {
-    'file': open('document.pdf', 'rb')
+**Request Example:**
+```json
+{
+  "file": "document.pdf",
+  "config": {
+    "extraction": {
+      "library": "unstructured"
+    },
+    "chunking": {
+      "strategy": "recursive",
+      "chunk_size": 512,
+      "chunk_overlap": 50
+    }
+  },
+  "metadata": {
+    "title": "Q4 Financial Report",
+    "author": "John Doe",
+    "department": "Finance",
+    "document_type": "report",
+    "confidentiality": "internal"
+  },
+  "callback_url": "https://example.com/webhook/job-completed"
 }
-
-data = {
-    'config': json.dumps({
-        "extraction": {
-            "strategies": ["pdf_text", "pdf_ocr"]  # Factory selects based on strategies
-        },
-        "chunking": {
-            "strategy": "recursive",  # or "semantic"
-            "chunk_size": 512,
-            "chunk_overlap": 50
-        },
-        "deduplication": {
-            "strategies": ["minhash", "simhash"],  # Multiple dedup strategies
-            "threshold": 0.95
-        }
-    }),
-    'metadata': json.dumps({
-        "title": "Example Document",
-        "author": "John Doe"
-    }),
-    'callback_url': 'https://example.com/webhook'
-}
-
-response = requests.post('https://api.example.com/api/v2/ingest', files=files, data=data)
 ```
+
+**Default Configuration** (when `config` not provided):
+```json
+{
+  "extraction": {
+    "library": "unstructured"
+  },
+  "chunking": {
+    "strategy": "recursive",
+    "chunk_size": 512,
+    "chunk_overlap": 50
+  }
+}
+```
+
+**Note:** Cleaning is automatic and built into the extraction library (Unstructured), so no separate cleaning configuration is needed.
+
+**Extraction Library Options:**
+- `"unstructured"` - Default, open-source multi-format document parser
+- `"azure_di"` - Azure Document Intelligence (future support, cloud-based OCR and advanced extraction)
 
 **Response:**
 ```json
@@ -444,14 +311,12 @@ response = requests.post('https://api.example.com/api/v2/ingest', files=files, d
   "status": "processing",
   "progress": {
     "current_step": "chunking",
-    "percent_complete": 66,
+    "percent_complete": 50,
     "extracted": 1,
-    "chunked": 1,
-    "deduplicated": 0
+    "chunked": 0
   },
   "stats": {
-    "chunks_created": 150,
-    "chunks_deduplicated": 0
+    "chunks_created": 150
   }
 }
 ```
@@ -468,296 +333,243 @@ response = requests.post('https://api.example.com/api/v2/ingest', files=files, d
 
 ## Pipeline Components
 
-## 1. Extract Component
+The pipeline uses **interface-driven design** with pluggable extraction libraries and chunking strategies. Each component has defaults that can be overridden via API configuration.
 
-**Purpose:** Extract raw text from documents
+**Note:**
+- Document cleaning/normalization is automatically performed by the extraction library (Unstructured) and does not require separate configuration.
+- Chunking uses a single strategy selection (not multiple strategies).
+
+### 1. Extract Component
+
+**Purpose:** Extract and clean text from documents (extraction includes automatic cleaning/normalization)
 
 **Interface:**
 ```python
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import Dict, Any
+from pydantic import BaseModel, Field
+from typing import Dict, Any, List, Optional
 
-@dataclass
-class ExtractionResult:
-    text: str
+class ExtractionResult(BaseModel):
+    text: str  # Already cleaned and normalized by extractor
     metadata: Dict[str, Any]
-    warnings: list[str] = None
+    warnings: Optional[List[str]] = Field(default_factory=list)
+
+    class Config:
+        extra = "forbid"  # Prevent unexpected fields
 
 class IExtractor(ABC):
     @abstractmethod
     def extract(self, source: Any, config: Dict) -> ExtractionResult:
+        """Extract and clean text from source document"""
         pass
 
     @abstractmethod
     def supports_format(self, format: str) -> bool:
+        """Check if this extractor supports the given format"""
         pass
 ```
 
-### Document Extraction Library Comparison
+**Supported Formats:**
+- PDF, DOCX, DOC, PPTX, HTML, Markdown, TXT, and 20+ more formats
 
-| Feature | Unstructured | AzureAIDocumentIntelligenceLoader |
-|---------|-------------|-----------------------------------|
-| **Deployment Type** | Open-source library (local) | Cloud API service (Azure) |
-| **Cost** | Free (open-source) | Pay-per-page API usage |
-| **Supported Formats** | PDF, DOCX, DOC, PPTX, HTML, MD, TXT, Images (20+ formats) | PDF, DOCX, PPTX, Images, Forms, Receipts, Invoices |
-| **PDF Text Extraction** | ✓ Direct text extraction | ✓ Direct text extraction |
-| **OCR Capability** | ✓ (requires tesseract) | ✓ Built-in high-quality OCR |
-| **Table Extraction** | ✓ Basic table detection | ✓✓ Advanced table structure & cell extraction |
-| **Layout Analysis** | ✓ Basic layout detection | ✓✓ Advanced layout understanding |
-| **Handwriting Recognition** | ✗ Limited | ✓ AI-powered handwriting recognition |
-| **Form Field Extraction** | ✗ Not specialized | ✓✓ Specialized form/invoice models |
-| **Output Formats** | Elements (text, title, list, table) | Markdown, Page-by-page, JSON |
-| **Semantic Chunking** | ✗ (requires separate chunking) | ✓ Built-in contextual chunking |
-| **Processing Speed** | Fast (local, ~1.3s per doc) | Moderate (API call, ~2-3s per doc) |
-| **Scalability** | Limited by local resources | Highly scalable (Azure infrastructure) |
-| **Network Dependency** | None (fully offline) | Required (API calls) |
-| **Setup Complexity** | Simple (pip install) | Moderate (Azure resource + credentials) |
-| **Metadata Extraction** | Basic (page numbers, coordinates) | Advanced (confidence scores, structure) |
-| **Multi-language Support** | 50+ languages | 100+ languages with better accuracy |
-| **Custom Models** | ✗ No | ✓ Train custom models for specific documents |
-| **Privacy/Data Residency** | Full control (on-premise) | Data sent to Azure (compliance certifications available) |
-| **LangChain Integration** | ✓ Via UnstructuredFileLoader | ✓ Native AzureAIDocumentIntelligenceLoader |
-| **Production Features** | Limited (open-source SLA) | Enterprise SLA, uptime guarantees |
-| **Best For** | Cost-sensitive, simple documents, high privacy requirements | Complex documents, forms, invoices, production-grade accuracy |
+**Extraction Libraries** (configurable via API):
+- **`unstructured`** (default): Open-source multi-format document parser
+  - Supports 20+ document formats (PDF, DOCX, HTML, TXT, Markdown, etc.)
+  - Local processing, no external API calls
+  - Handles text extraction, tables, and document structure
+  - **Automatic cleaning and normalization** (see below)
+- **`azure_di`** (future): Azure Document Intelligence
+  - Cloud-based extraction service
+  - Built-in OCR with high accuracy for scanned documents
+  - Advanced table and layout extraction
+  - Handwriting recognition support
+  - Includes automatic text cleanup
 
-### Recommendation
+**Default Library:** `"unstructured"`
 
-**Choose Unstructured if:**
-- Budget constraints (no API costs)
-- Processing simple, text-heavy documents (PDFs, DOCX)
-- Data privacy requirements (on-premise processing)
-- Low latency requirements (local processing)
-- Offline processing needed
+#### Document Cleaning & Normalization (Built-in)
 
-**Choose Azure Document Intelligence if:**
-- Processing complex documents with tables, forms, or invoices
-- Need high-quality OCR for scanned documents
-- Require handwriting recognition
-- Production-grade accuracy and reliability required
-- Azure ecosystem integration preferred
-- Budget allows for API usage costs
+The Unstructured library automatically performs cleanup and normalization during extraction to make text usable for downstream NLP or RAG pipelines. **No separate cleaning step is required.**
 
-**Hybrid Approach:**
-- Use Unstructured for simple text documents (markdown, basic PDFs)
-- Use Azure DI for complex, structured documents (forms, invoices, scanned PDFs)
-- Implement fallback: try Unstructured first, escalate to Azure DI if extraction quality is poor
+| Cleaning Step | Description |
+|---------------|-------------|
+| **Whitespace normalization** | Removes redundant newlines, extra spaces, line breaks split across PDF lines |
+| **Character cleanup** | Fixes encoding issues (like smart quotes, ligatures, page headers/footers) |
+| **Layout flattening** | Rebuilds logical reading order (important for multi-column PDFs) |
+| **Dehyphenation** | Fixes broken words split across lines (common in PDFs) |
+| **Section merging** | Joins paragraphs or list items belonging to the same section |
+| **HTML tag removal** | Strips unwanted tags, leaving text clean |
+| **Metadata enrichment** | Adds metadata like filename, page number, coordinates, category, table markers, etc. |
 
-### Testing & Comparison Tool
-
-A comparison tool is available at `compare_extractors.py` to benchmark both libraries on your specific document set. See `EXTRACTOR_COMPARISON.md` for usage instructions.
-
-```bash
-python compare_extractors.py /path/to/documents --output comparison_report.json
-```
-
-**Implementation:**
-- **Primary Library:** `unstructured` (supports PDF, DOCX, HTML, Markdown, etc.)
-- **Alternative/Advanced:** `AzureAIDocumentIntelligenceLoader` for complex documents
-- **Selection Strategy:** Factory pattern based on document type and complexity
-- **Cleaning:**
-  - Remove extra whitespace with regex
-  - HTML → Markdown using `markdownify`
-  - Normalize unicode characters
-- **Output:** Store cleaned text in object storage
+**Note:** Since cleaning is automatic, the extracted text from `ExtractionResult` is already normalized and ready for chunking.
 
 ### 2. Chunk Component
 
-**Purpose:** Split text into optimal-sized segments
+**Purpose:** Split text into optimal-sized segments with pluggable chunking strategies
 
 **Interface:**
 ```python
-@dataclass
-class Chunk:
+class Chunk(BaseModel):
     id: str
     text: str
     metadata: Dict[str, Any]
     position: int
 
+    class Config:
+        extra = "forbid"
+
 class IChunker(ABC):
     @abstractmethod
-    def chunk(self, text: str, config: Dict) -> list[Chunk]:
+    def chunk(self, text: str, config: Dict) -> List[Chunk]:
+        """Split text into chunks"""
         pass
 ```
 
-**Implementation:**
-- **Library:** LangChain `RecursiveCharacterTextSplitter` (default)
-- **Semantic Chunking:** LangChain `SemanticChunker` for advanced use
-- **User Controls:**
-  - `chunk_size`: 512 tokens (default)
-  - `chunk_overlap`: 50 tokens (default)
-  - `strategy`: "recursive" | "semantic"
+**Available Chunking Strategies** (select one via API):
+- **`recursive`** (default): Character-based splitting with configurable size and overlap
+- **`semantic`**: Context-aware chunking based on semantic boundaries
+- **`sentence`**: Split by sentence boundaries
+- **`paragraph`**: Split by paragraph boundaries
 
-### 3. Deduplication Component
+**Configuration Parameters:**
+- `strategy`: Single strategy selection (string, not list)
+- `chunk_size`: Tokens per chunk (default: 512)
+- `chunk_overlap`: Overlapping tokens between chunks (default: 50)
 
-**Purpose:** Remove duplicate chunks
+**Default Strategy:** `"recursive"`
 
-**Interface:**
+### API Configuration Models
+
+**Purpose:** Pydantic models for API request validation and configuration
+
+**Models:**
 ```python
-@dataclass
-class DeduplicationResult:
-    unique_chunks: list[Chunk]
-    duplicates_removed: int
+from enum import Enum
 
-class IDeduplicator(ABC):
-    @abstractmethod
-    def deduplicate(self, chunks: list[Chunk], config: Dict) -> DeduplicationResult:
-        pass
+class ExtractionLibrary(str, Enum):
+    UNSTRUCTURED = "unstructured"
+    AZURE_DI = "azure_di"  # Future support
+
+class ExtractionConfig(BaseModel):
+    library: ExtractionLibrary = Field(default=ExtractionLibrary.UNSTRUCTURED)
+
+    class Config:
+        extra = "forbid"
+
+class ChunkingConfig(BaseModel):
+    strategy: str = Field(default="recursive")
+    chunk_size: int = Field(default=512, ge=1, le=8192)
+    chunk_overlap: int = Field(default=50, ge=0)
+
+    class Config:
+        extra = "forbid"
+
+class IngestionConfig(BaseModel):
+    extraction: ExtractionConfig = Field(default_factory=ExtractionConfig)
+    chunking: ChunkingConfig = Field(default_factory=ChunkingConfig)
+    metadata: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    callback_url: Optional[str] = Field(None, max_length=2048)
+
+    class Config:
+        extra = "forbid"
+
+class JobResponse(BaseModel):
+    job_id: str
+    status: str
+    submitted_at: str
+    filename: str
+
+class JobStatusResponse(BaseModel):
+    job_id: str
+    status: str
+    progress: Dict[str, Any]
+    stats: Dict[str, Any]
 ```
 
-**Implementation:**
-- **Method:** MinHash/SimHash for fuzzy matching
-- **Cache:** Redis for storing chunk hashes
-- **Threshold:** 0.95 similarity (configurable)
+**Benefits:**
+- **Automatic validation**: FastAPI validates requests before reaching business logic
+- **API documentation**: Auto-generated OpenAPI/Swagger docs with field constraints
+- **Type safety**: Runtime type checking prevents invalid data
+- **Default values**: Sensible defaults for optional fields
+- **Field constraints**: `ge=1, le=8192` ensures chunk_size is within valid range
 
 ---
 
 ## Technology Stack
 
-### Final Technology Decisions
+### Architecture Components
 
-| Component | Technology | Rationale |
-|-----------|------------|-----------|
-| **API Framework** | FastAPI | High performance, async support, OpenAPI docs |
-| **Language** | Python 3.11+ | Rich ML/AI ecosystem |
-| **Task Queue** | Celery | Distributed task processing, automatic retries, task chaining |
-| **Message Broker** | Redis (Azure Redis Cache / GCP Memorystore) | Celery broker/backend, job state management |
-| **Container Orchestration** | Kubernetes (AKS / GKE) | Multi-cloud scalability for worker pods |
-| **Object Storage** | Azure Blob Storage / GCS | Document and chunk storage with unified SDK |
-| **Extraction** | unstructured | Multi-format document parsing (PDF, DOCX, HTML) |
-| **Text Cleaning** | markdownify + regex | HTML to Markdown conversion, whitespace normalization |
-| **Chunking** | LangChain | Battle-tested text splitters (Recursive, Semantic) |
-| **Deduplication** | MinHash/SimHash + Redis | Fuzzy matching with configurable threshold |
-| **Monitoring** | Celery Flower + Prometheus + Grafana | Task monitoring and system metrics |
+| Layer | Technology | Purpose |
+|-------|------------|---------|
+| **API Layer** | REST API Framework | Request handling, job submission, status queries |
+| **Data Validation** | Pydantic | Runtime validation, API schemas, configuration models |
+| **Task Queue** | Distributed Task Queue | Asynchronous job processing, task chaining, automatic retries |
+| **Message Broker** | In-Memory Data Store | Task queue broker and result backend |
+| **Container Orchestration** | Kubernetes | Multi-cloud worker pod management and auto-scaling |
+| **Object Storage** | Cloud Blob Storage | Document and chunk persistence |
+| **Document Extraction** | Multi-format Document Parser | Text extraction from 20+ document formats |
+| **Text Processing** | Text Splitting Library | Chunking strategies (recursive, semantic) |
+| **Monitoring** | Metrics & Visualization | Task monitoring, system metrics, dashboards |
 
-### Core Dependencies
+### Cloud Services
 
-```toml
-[tool.poetry.dependencies]
-python = "^3.11"
-
-# API
-fastapi = "^0.110.0"
-uvicorn = "^0.27.0"
-pydantic = "^2.6.0"
-
-# Task Queue
-celery = "^5.3.0"  # Distributed task processing
-flower = "^2.0.0"  # Celery monitoring UI
-
-# Cloud Storage (Multi-cloud)
-azure-storage-blob = "^12.19.0"  # Azure Blob Storage
-google-cloud-storage = "^2.14.0"  # GCS
-
-# Redis (Multi-cloud) - Celery broker + backend
-redis = "^5.0.0"  # Azure Redis Cache & GCP Memorystore
-
-# Document processing
-unstructured = "^0.12.0"
-markdownify = "^0.11.0"
-python-docx = "^1.1.0"
-PyMuPDF = "^1.23.0"
-
-# Chunking
-langchain = "^0.1.0"
-langchain-text-splitters = "^0.0.1"
-tiktoken = "^0.5.0"
-
-# Deduplication
-datasketch = "^1.6.0"  # MinHash implementation
-
-# Utilities
-httpx = "^0.26.0"
-tenacity = "^8.2.0"
-
-# Monitoring
-prometheus-client = "^0.19.0"
-celery-exporter = "^1.6.0"  # Celery metrics for Prometheus
-```
+| Service Type | Azure | GCP |
+|--------------|-------|-----|
+| **Kubernetes** | Azure Kubernetes Service (AKS) | Google Kubernetes Engine (GKE) |
+| **Redis** | Azure Cache for Redis | GCP Memorystore (Redis) |
+| **Object Storage** | Azure Blob Storage | Google Cloud Storage (GCS) |
 
 ---
 
 ## Multi-Cloud Configuration
 
-### Cloud Configuration
+### Cloud Provider Configuration
 
-```python
-class CloudConfig:
-    # Multi-cloud deployment
-    cloud_provider: "azure" | "gcp"
+**Azure Configuration:**
+- Storage account credentials
+- Azure Cache for Redis connection
+- AKS cluster settings
 
-    # Azure-specific
-    azure_storage_account: str = None
-    azure_storage_key: str = None
-    azure_eventhub_connection: str = None
-    azure_redis_host: str = None
+**GCP Configuration:**
+- Project ID and service credentials
+- GCP Memorystore (Redis) connection
+- GKE cluster settings
 
-    # GCP-specific
-    gcp_project_id: str = None
-    gcp_storage_bucket: str = None
-    gcp_kafka_bootstrap_servers: str = None
-    gcp_memorystore_host: str = None
+### Pipeline Configuration
 
-    # Shared/Multi-cloud
-    redis_host: str  # Redis for Celery broker/backend
-```
+**Extraction Configuration:**
+- Supported file formats: PDF, DOCX, HTML, TXT, Markdown, and 20+ formats
+- Extraction library: `unstructured` (default), `azure_di` (future)
+- **Automatic cleaning/normalization** included in extraction (no separate config needed)
+- Default: `library: "unstructured"`
 
-### User-Configurable Parameters
+**Chunking Configuration:**
+- Chunking strategy (single selection): `recursive`, `semantic`, `sentence`, `paragraph`
+- Chunk size (tokens)
+- Chunk overlap (tokens)
+- Default: `strategy: "recursive"`
 
-```python
-class PipelineConfig:
-    # Extraction - strategies determine which extractor class to use
-    extraction: {
-        "strategies": list[str] = ["pdf_text", "pdf_ocr", "docx", "html"],  # Factory selects implementation
-    }
+### Configuration Profiles
 
-    # Chunking
-    chunking: {
-        "strategy": "recursive" | "semantic",  # Factory selects RecursiveTextSplitter or SemanticChunker
-        "chunk_size": int = 512,
-        "chunk_overlap": int = 50
-    }
+**Balanced Profile:**
+- Extraction library: `unstructured` (includes automatic cleaning)
+- Chunking strategy: `recursive`, chunk_size: 512, overlap: 50
+- Optimal for general digital documents
 
-    # Deduplication - strategies determine which deduplicator to use
-    deduplication: {
-        "strategies": list[str] = ["minhash", "simhash"],  # Factory selects implementation(s)
-        "threshold": float = 0.95
-    }
-```
+**High Quality Profile:**
+- Extraction library: `unstructured` (includes automatic cleaning)
+- Chunking strategy: `semantic`, chunk_size: 256, overlap: 50
+- Semantic chunking for precision
 
-**Extraction Strategies:**
-- `pdf_text`: Extract text directly from PDF
-- `pdf_ocr`: OCR-based extraction for scanned PDFs
-- `docx`: Microsoft Word document extraction
-- `html`: HTML document parsing
-- `markdown`: Markdown file extraction
+**Large Context Profile:**
+- Extraction library: `unstructured` (includes automatic cleaning)
+- Chunking strategy: `recursive`, chunk_size: 2048, overlap: 100
+- Larger chunks for long-form content
 
-**Deduplication Strategies:**
-- `minhash`: MinHash-based fuzzy deduplication
-- `simhash`: SimHash-based similarity detection
-- `exact`: Exact match deduplication (SHA256 hash)
-
-### Configuration Presets
-
-```python
-PRESETS = {
-    "balanced": {
-        "extraction": {"strategies": ["pdf_text", "docx", "html"]},
-        "chunking": {"strategy": "recursive", "chunk_size": 512, "chunk_overlap": 50},
-        "deduplication": {"strategies": ["minhash"], "threshold": 0.95}
-    },
-    "high_quality": {
-        "extraction": {"strategies": ["pdf_text", "pdf_ocr", "docx", "html"]},
-        "chunking": {"strategy": "semantic", "chunk_size": 256, "chunk_overlap": 30},
-        "deduplication": {"strategies": ["minhash", "simhash"], "threshold": 0.98}
-    },
-    "large_context": {
-        "extraction": {"strategies": ["pdf_text", "docx"]},
-        "chunking": {"strategy": "recursive", "chunk_size": 1024, "chunk_overlap": 100},
-        "deduplication": {"strategies": ["exact"], "threshold": 1.0}
-    }
-}
-```
+**Future: Azure DI Profile:**
+- Extraction library: `azure_di` (includes automatic cleaning)
+- Chunking strategy: `semantic`, chunk_size: 512, overlap: 50
+- Cloud-based extraction with advanced OCR and handwriting support
 
 ---
 
@@ -779,416 +591,123 @@ PRESETS = {
 | Component | Replicas (Min-Max) | CPU | Memory | Auto-scale Metric |
 |-----------|-------------------|-----|--------|-------------------|
 | API | 3-10 | 500m | 512Mi | CPU > 70% |
-| Extractor Workers | 2-20 | 1000m | 2Gi | Kafka lag + CPU |
-| Chunker Workers | 2-15 | 500m | 1Gi | Kafka lag + CPU |
-| Dedup Workers | 2-10 | 1000m | 2Gi | Kafka lag + CPU |
-| Embedder Workers | 5-30 | 500m | 1Gi | Kafka lag + CPU |
-| Indexer Workers | 2-15 | 500m | 1Gi | Kafka lag + CPU |
+| Ingestion Workers | 2-10 | 1000m | 2Gi | Celery queue length + CPU |
 
-### Auto-scaling Configuration
+### Auto-scaling Strategy
 
-```yaml
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: embedder-hpa
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v2
-    kind: Deployment
-    name: embedder-workers
-  minReplicas: 5
-  maxReplicas: 30
-  metrics:
-  - type: Resource
-    resource:
-      name: cpu
-      target:
-        type: Utilization
-        averageUtilization: 70
-  - type: External
-    external:
-      metric:
-        name: kafka_consumer_lag
-      target:
-        type: AverageValue
-        averageValue: "100"
-```
+**Scaling Metrics:**
+- CPU utilization threshold
+- Queue length monitoring
+- Custom application metrics
 
-### Kafka Configuration (Multi-Cloud)
+**Scaling Behavior:**
+- Automatic scale-up based on workload
+- Gradual scale-down during idle periods
+- Independent scaling per worker type
 
-**Azure Event Hubs (Kafka-compatible):**
-```yaml
-# Azure Event Hubs namespace
-namespace: rag-ingestion-kafka-azure
-connection_string: ${AZURE_EVENTHUB_CONNECTION}
+### Task Queue Configuration
 
-topics:
-  extract-topic:
-    partitions: 10
-    retention_hours: 168  # 7 days
+**Queue Setup:**
+- Single queue: `ingest_queue`
+- All ingestion tasks routed to same queue
+- Simplified task routing and monitoring
 
-  chunk-topic:
-    partitions: 10
-    retention_hours: 168
+**Worker Configuration:**
+- Unified worker pool handles complete pipeline
+- Concurrency settings optimized for full pipeline processing
+- Task prefetch limits
+- Retry policies and backoff strategies
 
-  dedup-topic:
-    partitions: 10
-    retention_hours: 168
+### Worker Node Pools
 
-  embed-topic:
-    partitions: 20  # High volume
-    retention_hours: 168
+**Node Pool Strategy:**
+- Dedicated node pools for worker pods
+- Separation from API pods for resource isolation
+- Consistent configuration across clouds
 
-  index-topic:
-    partitions: 10
-    retention_hours: 168
-```
-
-**GCP Managed Kafka (Confluent Cloud on GCP):**
-```yaml
-# GCP Kafka cluster
-cluster_id: rag-ingestion-kafka-gcp
-bootstrap_servers: ${GCP_KAFKA_BOOTSTRAP_SERVERS}
-
-topics:
-  extract-topic:
-    partitions: 10
-    replication_factor: 3
-    retention_ms: 604800000
-
-  chunk-topic:
-    partitions: 10
-    replication_factor: 3
-
-  dedup-topic:
-    partitions: 10
-    replication_factor: 3
-
-  embed-topic:
-    partitions: 20
-    replication_factor: 3
-
-  index-topic:
-    partitions: 10
-    replication_factor: 3
-```
-
-**Kafka Consumer Groups (Consistent across both clouds):**
-- `extractor-group`
-- `chunker-group`
-- `dedup-group`
-- `embedder-group`
-- `indexer-group`
-
-### Infrastructure Isolation & Multi-Cloud Consistency
-
-**AKS Node Pool Configuration:**
-```yaml
-# Azure AKS node pool
-nodeSelector:
-  workload: ingestion
-  cloud: azure
-
-tolerations:
-- key: "workload"
-  operator: "Equal"
-  value: "ingestion"
-  effect: "NoSchedule"
-
-# Azure-specific: Use spot instances for cost optimization
-priority: Spot
-evictionPolicy: Delete
-spotMaxPrice: -1  # Pay up to on-demand price
-```
-
-**GKE Node Pool Configuration:**
-```yaml
-# GCP GKE node pool
-nodeSelector:
-  workload: ingestion
-  cloud: gcp
-
-tolerations:
-- key: "workload"
-  operator: "Equal"
-  value: "ingestion"
-  effect: "NoSchedule"
-
-# GCP-specific: Use preemptible VMs for cost optimization
-preemptible: true
-```
+**Cost Optimization:**
+- Spot/preemptible instances for workers
+- Automatic node scaling
+- Resource limits per worker type
 
 **Benefits:**
-- Search API performance unaffected by ingestion load
-- Independent scaling per cloud
-- Cost optimization with spot/preemptible instances
-- Consistent workload isolation across both clouds
+- Independent scaling of processing and API layers
+- Cost-efficient resource utilization
+- Isolation prevents resource contention
+- Consistent deployment across Azure and GCP
 
 ---
 
-## Implementation Patterns
+## Design Patterns
 
-### Factory Pattern for Component Creation
+### Factory Pattern
 
-```python
-# factories/extractor_factory.py
-from typing import Dict, Type
-from extractors.base import IExtractor
-from extractors.unstructured import UnstructuredExtractor
+**Purpose:** Create pipeline components based on configuration
 
-class ExtractorFactory:
-    _extractors: Dict[str, Type[IExtractor]] = {
-        'pdf': UnstructuredExtractor,
-        'docx': UnstructuredExtractor,
-        'html': UnstructuredExtractor,
-        'md': UnstructuredExtractor,
-    }
+**Components:**
+- **Extractor Factory**: Creates appropriate extractors based on library selection (unstructured, azure_di)
+- **Chunker Factory**: Selects chunking implementation based on single strategy selection (recursive, semantic, sentence, paragraph)
+- **Storage Factory**: Instantiates cloud-specific storage provider (Azure Blob / GCS)
 
-    @classmethod
-    def create(cls, format: str, config: Dict = None) -> IExtractor:
-        if format not in cls._extractors:
-            raise ValueError(f"Unsupported format: {format}")
-
-        extractor_class = cls._extractors[format]
-        return extractor_class(config or {})
-```
+**Benefits:**
+- Decouples component creation from usage
+- Supports multiple implementations per interface
+- Easy to add new extraction libraries or chunking strategies
+- Single strategy selection simplifies configuration and execution
 
 ### Cloud Provider Abstraction
 
-```python
-# core/cloud_factory.py
-from abc import ABC, abstractmethod
+**Storage Interface:**
+- Upload and download operations
+- Unified API across Azure Blob and GCS
+- Cloud-specific implementations hidden behind interface
 
-class IStorageProvider(ABC):
-    @abstractmethod
-    async def upload(self, key: str, data: bytes): pass
+**Benefits:**
+- Cloud-agnostic application code
+- Easy to switch or add cloud providers
+- Consistent behavior across deployments
 
-    @abstractmethod
-    async def download(self, key: str) -> bytes: pass
+### Dependency Injection
 
-class AzureBlobProvider(IStorageProvider):
-    def __init__(self, account_name: str, account_key: str):
-        from azure.storage.blob.aio import BlobServiceClient
-        self.client = BlobServiceClient(
-            account_url=f"https://{account_name}.blob.core.windows.net",
-            credential=account_key
-        )
+**Service Container:**
+- Manages lifecycle of shared services
+- Provides configured instances to workers
+- Handles cloud-specific initialization
 
-    async def upload(self, key: str, data: bytes):
-        container, blob = key.split('/', 1)
-        blob_client = self.client.get_blob_client(container, blob)
-        await blob_client.upload_blob(data, overwrite=True)
+**Injected Services:**
+- Task queue client
+- Object storage provider
+- Cache/state management
+- Configuration
 
-    async def download(self, key: str) -> bytes:
-        container, blob = key.split('/', 1)
-        blob_client = self.client.get_blob_client(container, blob)
-        stream = await blob_client.download_blob()
-        return await stream.readall()
+### Task Processing Pattern
 
-class GCSProvider(IStorageProvider):
-    def __init__(self, project_id: str, bucket: str):
-        from google.cloud import storage
-        self.client = storage.Client(project=project_id)
-        self.bucket = self.client.bucket(bucket)
+**Base Task:**
+- Common error handling
+- Status updates
+- Retry logic
+- Logging
 
-    async def upload(self, key: str, data: bytes):
-        blob = self.bucket.blob(key)
-        blob.upload_from_string(data)
+**Task Lifecycle (Atomic Operation):**
+1. Receive `ingest_task` from queue
+2. Download document from Object Storage
+3. Extract text (with automatic cleaning)
+4. Chunk text with metadata
+5. Store chunks to MongoDB
+6. Update job status to completed
+7. Send webhook notification (if configured)
 
-    async def download(self, key: str) -> bytes:
-        blob = self.bucket.blob(key)
-        return blob.download_as_bytes()
+### Error Handling Strategy
 
-class StorageFactory:
-    @staticmethod
-    def create(cloud_config: CloudConfig) -> IStorageProvider:
-        if cloud_config.cloud_provider == "azure":
-            return AzureBlobProvider(
-                cloud_config.azure_storage_account,
-                cloud_config.azure_storage_key
-            )
-        elif cloud_config.cloud_provider == "gcp":
-            return GCSProvider(
-                cloud_config.gcp_project_id,
-                cloud_config.gcp_storage_bucket
-            )
-        else:
-            raise ValueError(f"Unsupported cloud: {cloud_config.cloud_provider}")
-```
+**Retry Policy:**
+- Automatic retries with exponential backoff
+- Maximum retry attempts per task
+- Dead letter queue for failed tasks
 
-### Dependency Injection (Multi-Cloud)
-
-```python
-# core/container.py
-from dataclasses import dataclass
-from confluent_kafka import Producer, Consumer
-
-@dataclass
-class ServiceContainer:
-    kafka_producer: Producer
-    kafka_consumer: Consumer
-    object_storage: IStorageProvider  # Cloud-agnostic interface
-    vector_db: AsyncIOMotorClient
-    redis: Redis
-    config: AppConfig
-
-    @classmethod
-    def create(cls, config: AppConfig):
-        # Kafka configuration (works with Azure Event Hubs & GCP)
-        kafka_config = cls._get_kafka_config(config.cloud)
-
-        # Create cloud-specific storage provider
-        storage = StorageFactory.create(config.cloud)
-
-        # Redis (Azure Redis or GCP Memorystore)
-        redis_client = Redis(
-            host=config.cloud.azure_redis_host if config.cloud.cloud_provider == "azure"
-                 else config.cloud.gcp_memorystore_host,
-            port=6379,
-            decode_responses=True
-        )
-
-        return cls(
-            kafka_producer=Producer(kafka_config),
-            kafka_consumer=Consumer(kafka_config),
-            object_storage=storage,
-            vector_db=AsyncIOMotorClient(config.cloud.mongodb_uri)["rag_db"],
-            redis=redis_client,
-            config=config
-        )
-
-    @staticmethod
-    def _get_kafka_config(cloud_config: CloudConfig) -> dict:
-        if cloud_config.cloud_provider == "azure":
-            # Azure Event Hubs Kafka configuration
-            return {
-                'bootstrap.servers': f'{cloud_config.azure_eventhub_namespace}.servicebus.windows.net:9093',
-                'security.protocol': 'SASL_SSL',
-                'sasl.mechanism': 'PLAIN',
-                'sasl.username': '$ConnectionString',
-                'sasl.password': cloud_config.azure_eventhub_connection,
-            }
-        elif cloud_config.cloud_provider == "gcp":
-            # GCP Managed Kafka configuration
-            return {
-                'bootstrap.servers': cloud_config.gcp_kafka_bootstrap_servers,
-                'security.protocol': 'SASL_SSL',
-                'sasl.mechanism': 'PLAIN',
-                'sasl.username': cloud_config.gcp_kafka_username,
-                'sasl.password': cloud_config.gcp_kafka_password,
-            }
-```
-
-### Base Worker
-
-```python
-# workers/base.py
-from abc import ABC, abstractmethod
-from confluent_kafka import Consumer, Producer
-
-class BaseWorker(ABC):
-    def __init__(self, container: ServiceContainer):
-        self.container = container
-        self.consumer = container.kafka_consumer
-        self.producer = container.kafka_producer
-
-    @abstractmethod
-    async def process(self, message: dict) -> dict:
-        """Process message and return result for next stage."""
-        pass
-
-    @abstractmethod
-    def input_topic(self) -> str:
-        pass
-
-    @abstractmethod
-    def output_topic(self) -> str | None:
-        pass
-
-    async def run(self):
-        self.consumer.subscribe([self.input_topic()])
-
-        for message in self.consumer:
-            try:
-                data = json.loads(message.value)
-                result = await self.process(data)
-
-                if self.output_topic():
-                    self.producer.send(
-                        self.output_topic(),
-                        value=json.dumps(result).encode('utf-8')
-                    )
-
-                self.consumer.commit()
-
-            except Exception as e:
-                logger.error(f"Error processing message: {e}")
-                # Send to DLQ
-                self.producer.send('dlq-topic', message.value)
-```
-
-### Concrete Worker Example
-
-```python
-# workers/chunker_worker.py
-class ChunkerWorker(BaseWorker):
-    def input_topic(self) -> str:
-        return "chunk-topic"
-
-    def output_topic(self) -> str:
-        return "dedup-topic"
-
-    async def process(self, message: dict) -> dict:
-        job_id = message['job_id']
-        text_key = message['text_key']
-
-        # Download text from cloud storage (Azure Blob or GCS)
-        text_bytes = await self.container.object_storage.download(text_key)
-        text = text_bytes.decode('utf-8')
-
-        # Chunk text
-        chunker = ChunkerFactory.create(
-            message['config']['chunking']['strategy'],
-            message['config']['chunking']
-        )
-        chunks = chunker.chunk(text)
-
-        # Store chunks in cloud storage (Azure Blob or GCS)
-        chunks_key = f"{job_id}/chunks.json"
-        chunks_data = json.dumps([c.__dict__ for c in chunks]).encode('utf-8')
-        await self.container.object_storage.upload(chunks_key, chunks_data)
-
-        # Update job status in Redis
-        self.container.redis.hset(
-            f"job:{job_id}",
-            "chunks_created",
-            len(chunks)
-        )
-
-        return {
-            'job_id': job_id,
-            'chunks_key': chunks_key,
-            'config': message['config']
-        }
-```
-
-### Error Handling & Retry Strategy
-
-```python
-from tenacity import retry, stop_after_attempt, wait_exponential
-
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=4, max=60),
-    reraise=True
-)
-async def process_with_retry(message):
-    # Processing logic
-    pass
-```
-
-**Dead Letter Queue:** Failed messages after 3 retries are sent to `dlq-topic` for manual review.
+**Failure Recovery:**
+- Task-level retries
+- Job status tracking
+- Manual replay capability
 
 ---
 
@@ -1196,19 +715,100 @@ async def process_with_retry(message):
 
 ### Metrics (Prometheus)
 
-- `pipeline_messages_processed_total{stage}`
-- `pipeline_processing_duration_seconds{stage}`
-- `pipeline_errors_total{stage, error_type}`
-- `kafka_consumer_lag{topic, consumer_group}`
-- `embedding_api_calls_total`
-- `embedding_api_latency_seconds`
+**Celery Task Metrics:**
+- `celery_tasks_total{task, state}` - Total tasks by state (SUCCESS, FAILURE, RETRY)
+- `celery_task_duration_seconds{task}` - Task execution time
+- `celery_queue_length{queue}` - Current queue depth
+- `celery_workers_active{queue}` - Active workers per queue
+
+**Pipeline Metrics:**
+- `pipeline_documents_processed_total{stage}` - Documents processed per stage
+- `pipeline_processing_duration_seconds{stage}` - Stage processing time
+- `pipeline_errors_total{stage, error_type}` - Errors by stage and type
+- `pipeline_jobs_total{status}` - Total jobs by status
+
+**System Metrics:**
+- `redis_memory_usage_bytes` - Redis memory consumption
+- `storage_operations_total{operation, cloud}` - Cloud storage operations
 
 ### Dashboards (Grafana)
 
-1. **Pipeline Health**: Success rate, error rate per stage
-2. **Performance**: Processing time, throughput per stage
-3. **Kafka Metrics**: Consumer lag, message rate
-4. **Cost Tracking**: Embedding API usage, compute utilization
+1. **Pipeline Health**: Success rate, error rate per stage, job completion rate
+2. **Performance**: Task processing time, throughput per stage, queue depths
+3. **Celery Metrics**: Worker utilization, task success/failure rates, retry counts
+4. **Infrastructure**: Redis memory usage, worker pod CPU/memory, storage operations
+5. **Cost Tracking**: Cloud storage usage, compute utilization, auto-scaling events
+
+---
+
+## Implementation Roadmap
+
+### Phase 1: Core Pipeline (Weeks 1-4)
+
+**Objective:** Build foundational two-stage pipeline
+
+**Deliverables:**
+- REST API for job submission and status tracking
+- Extract and chunk pipeline stages
+- Cloud storage integration
+- Basic monitoring and logging
+
+### Phase 2: Multi-Cloud Deployment (Weeks 5-7)
+
+**Objective:** Deploy to Azure and GCP environments
+
+**Deliverables:**
+- Kubernetes cluster configuration (AKS/GKE)
+- Worker pod deployments
+- Auto-scaling configuration
+- Multi-cloud validation and testing
+
+### Phase 3: Monitoring & Observability (Weeks 8-9)
+
+**Objective:** Implement comprehensive monitoring
+
+**Deliverables:**
+- Metrics collection and visualization
+- Task queue monitoring
+- Alerting and SLO definitions
+- Performance dashboards
+
+### Phase 4: Production Hardening (Weeks 10-12)
+
+**Objective:** Optimize for production workloads
+
+**Deliverables:**
+- Performance optimization
+- Reliability improvements (DLQ, retries)
+- Documentation (API, deployment, operations)
+- Disaster recovery procedures
+
+### Future Enhancements
+
+**Optional Capabilities:**
+- Advanced OCR support for scanned documents
+- Alternative extraction providers
+- Embedding generation and vector indexing
+- Advanced analytics and reporting
+
+### Success Criteria
+
+**Performance Targets:**
+- Extraction latency (P95): < 2 seconds per document
+- Chunking throughput: > 100 docs/minute per worker
+- End-to-end pipeline: < 3 seconds for typical document
+
+**Reliability Targets:**
+- Pipeline success rate: > 99%
+- Worker uptime: > 99.9%
+- Data durability: 100% (via cloud storage)
+- Automatic recovery: < 1 minute for worker failures
+
+**Scalability Targets:**
+- Support 1000+ concurrent ingestion jobs
+- Handle documents up to 100MB
+- Auto-scale from 10 to 100+ workers based on load
+- Maintain latency targets under 10x normal load
 
 ---
 
@@ -1216,16 +816,49 @@ async def process_with_retry(message):
 
 This design provides a **multi-cloud, scalable RAG ingestion pipeline** with:
 
-- ✅ **Azure + GCP Deployment** with AKS and GKE clusters
-- ✅ **Unified Configuration** across both cloud providers
-- ✅ **Cloud Abstraction Layer** with provider-specific implementations
-- ✅ **Kafka** via Azure Event Hubs and GCP Managed Kafka
-- ✅ **MongoDB Atlas Vector Search** for unified cross-cloud vector storage
-- ✅ **Kong API Gateway** for LLM and embedding API access
-- ✅ **Native Cloud Storage** (Azure Blob + GCS) with unified interface
-- ✅ **Factory + DI patterns** for cloud provider abstraction
-- ✅ **Dedicated infrastructure** isolated from search API
-- ✅ **Horizontal auto-scaling** with spot/preemptible instances
-- ✅ **Comprehensive monitoring** with Prometheus/Grafana
+### Architecture Highlights
 
-The system is production-ready, multi-cloud, and designed for scale with complete Azure/GCP consistency.
+- ✅ **Multi-Cloud Support**: Deployable on Azure (AKS) and GCP (GKE)
+  - **Azure**: Azure Cache for Redis, Azure Blob Storage, AKS
+  - **GCP**: GCP Memorystore (Redis), Google Cloud Storage, GKE
+- ✅ **Cloud Abstraction**: Unified interface across cloud providers
+- ✅ **Distributed Processing**: Task queue-based asynchronous processing
+- ✅ **Atomic Pipeline**: Extract (with built-in cleaning) → Chunk → Store in single task
+- ✅ **Interface-Driven Design**: Pluggable extraction libraries and chunking strategies
+- ✅ **Multiple Document Formats**: Support for 20+ file formats
+- ✅ **Flexible Processing**: Configurable via API request (single strategy selection)
+- ✅ **Auto-scaling**: Dynamic resource allocation based on workload
+- ✅ **Cost Optimization**: Spot/preemptible instances for workers
+- ✅ **Fault Tolerance**: Automatic retries and failure recovery
+- ✅ **Observability**: Comprehensive metrics and monitoring
+
+### Key Capabilities
+
+**Document Processing:**
+- **Extraction Library**: Unstructured (default), Azure DI (future support) - selectable via API
+  - Multi-format support (PDF, DOCX, HTML, Markdown, and 20+ formats)
+  - Local processing with Unstructured or cloud-based with Azure DI
+  - **Automatic cleaning/normalization** built into extraction (whitespace, character cleanup, layout flattening, dehyphenation, etc.)
+- **Chunking Strategy**: Single strategy selection - recursive, semantic, sentence, or paragraph (configurable via API)
+
+**Infrastructure:**
+- Kubernetes-based container orchestration
+- Independent scaling per pipeline stage
+- Dedicated worker node pools
+- Multi-cloud object storage
+
+**Operational Excellence:**
+- REST API for job management (FastAPI + Pydantic)
+- Automatic request validation with Pydantic models
+- Auto-generated OpenAPI/Swagger documentation
+- Real-time status tracking
+- Webhook notifications
+- Comprehensive monitoring and alerting
+
+**Data Validation & Type Safety:**
+- **Pydantic models** for all API requests and responses
+- Runtime validation with field constraints (e.g., `chunk_size: >=1, <=8192`)
+- Type-safe data structures throughout the pipeline
+- Automatic JSON serialization/deserialization
+
+The system is designed for production scale with consistent behavior across cloud providers.
