@@ -1,9 +1,9 @@
-# RAG Ingestion API - Enhanced v1/ingest Implementation Stories
+# RAG Ingestion API - Enhanced v1/ingestion Implementation Stories
 
 **Project**: RAG Ingestion API v1 Enhancement
-**Epic**: Document Processing Pipeline with Enhanced v1/ingest Endpoint
+**Epic**: Document Processing Pipeline with Enhanced v1/ingestion Endpoint
 **Sprint Duration**: 2 weeks
-**Context**: Enhancing existing v1/ingest API on AKS and GKE with hybrid storage and unified worker architecture
+**Context**: Enhancing existing v1/ingestion API on AKS and GKE with hybrid storage and unified worker architecture
 
 **Architecture**: One story per layer, with all configuration and dependencies bundled
 
@@ -310,7 +310,7 @@ Implement complete task processing layer including Celery configuration for sing
 - [ ] Test coverage >80%
 
 **8. Documentation**:
-- [ ] Running workers locally for v1/ingest
+- [ ] Running workers locally for v1/ingestion
 - [ ] Task architecture and atomic processing
 - [ ] Error handling and retry logic
 
@@ -320,19 +320,20 @@ Implement complete task processing layer including Celery configuration for sing
 
 ## Story 5: API Layer - FastAPI Endpoints for Job Management
 
-**Story Title**: Implement complete API layer with job submission, status query, and cancellation endpoints
+**Story Title**: Implement complete API layer with job submission and status query endpoints
 
-**Story Points**: 15
+**Story Points**: 12
 
 **Description**:
-Implement complete REST API layer for v1/ingest including POST /api/v1/ingest for job submission, GET /api/v1/jobs/{job_id} for status queries, and DELETE /api/v1/jobs/{job_id} for job cancellation. Includes request/response validation, file upload handling, and integration with storage and task layers.
+Implement complete REST API layer for v1/ingestion including POST /v1/ingestion for job submission and GET /v1/ingestion/{knowledge_ingestion_task_id} for status queries. Includes request/response validation, file upload handling, and integration with storage and task layers.
 
 **Acceptance Criteria**:
 
 **1. Pydantic Models**:
 - [ ] Create `src/rag_ingestion_api/models/api.py`:
   - `IngestionConfig` model combining extraction and chunking configs
-  - `IngestRequest` model (file, config, metadata, callback_url)
+  - `JobResponse` model (job_id, status, submitted_at, filename)
+  - `TaskStatusResponse` model (task_id, status, chunks)
   - `ErrorResponse` model (error_code, message, details)
   - All models have `extra = "forbid"` in Config
   - Note: No `CleaningConfig` - cleaning is automatic in extraction
@@ -345,9 +346,9 @@ Implement complete REST API layer for v1/ingest including POST /api/v1/ingest fo
 - [ ] Update `.env.example` with API settings
 - [ ] Configuration validates on application startup
 
-**3. POST /api/v1/ingest Endpoint**:
-- [ ] Create `src/rag_ingestion_api/api/v1/ingest.py`:
-  - POST `/api/v1/ingest` endpoint
+**3. POST /v1/ingestion Endpoint**:
+- [ ] Create `src/rag_ingestion_api/api/v1/ingestion.py`:
+  - POST `/v1/ingestion` endpoint
   - Accepts `multipart/form-data` with fields:
     - `file`: UploadFile (required)
     - `config`: JSON string (optional, uses defaults if not provided)
@@ -361,47 +362,35 @@ Implement complete REST API layer for v1/ingest including POST /api/v1/ingest fo
     - Upload file to Object Storage (Azure Blob or GCS) permanently
     - Create job in Redis with status "queued" using `JobStatusManager`
     - Dispatch `ingest_document_task` to Celery (unified task for complete pipeline)
-    - Return 202 Accepted with `JobResponse`
+    - Return 202 Accepted with `JobResponse` (job_id, status, submitted_at, filename)
   - Error responses:
     - 400: Invalid config, missing file, unsupported format
     - 413: File too large
     - 500: Object Storage failure, queue failure
 
-**4. GET /api/v1/jobs/{job_id} Endpoint**:
-- [ ] Create or update `src/rag_ingestion_api/api/v1/jobs.py`:
-  - GET `/api/v1/jobs/{job_id}` endpoint
-  - Queries Redis using `JobStatusManager`
-  - Returns `JobStatusResponse` with:
-    - job_id, status, submitted_at, updated_at
-    - progress: {current_step, percent_complete}
-    - stats: {extraction_time, chunks_created, file_size, document_storage_path}
+**4. GET /v1/ingestion/{knowledge_ingestion_task_id} Endpoint**:
+- [ ] Add to `src/rag_ingestion_api/api/v1/ingestion.py`:
+  - GET `/v1/ingestion/{knowledge_ingestion_task_id}` endpoint
+  - Queries Redis/MongoDB for task status and chunks
+  - Returns `TaskStatusResponse` with:
+    - task_id: str
+    - status: str (processing, completed, failed)
+    - chunks: List[str] (array of chunk IDs)
   - Error responses:
-    - 404: Job ID not found
-    - 500: Redis connection failure
+    - 404: Task ID not found
+    - 500: Redis/MongoDB connection failure
 
-**5. DELETE /api/v1/jobs/{job_id} Endpoint**:
-- [ ] Update `src/rag_ingestion_api/api/v1/jobs.py`:
-  - DELETE `/api/v1/jobs/{job_id}` endpoint
-  - Revokes Celery task for the job (`ingest_document_task`)
-  - Updates job status to "cancelled" using `JobStatusManager`
-  - Optionally deletes document from Object Storage (Blob/GCS)
-  - Optionally deletes chunks from MongoDB (if partially written)
-  - Error responses:
-    - 404: Job ID not found
-    - 409: Job already completed/failed (cannot cancel)
-  - Returns 204 No Content on success
-
-**6. Testing**:
+**5. Testing**:
 - [ ] Unit tests with mocked Object Storage, Celery, and JobStatusManager
 - [ ] Integration tests: submit job, verify task dispatched, file in Object Storage
 - [ ] Request validation tests (invalid inputs)
-- [ ] Test job status queries
-- [ ] Test job cancellation in different states (queued, processing)
+- [ ] Test status queries with various task IDs
+- [ ] Test chunks retrieval
 - [ ] Test coverage >80%
 
-**7. Documentation**:
+**6. Documentation**:
 - [ ] OpenAPI documentation auto-generated
-- [ ] Request/response examples
+- [ ] Request/response examples for both endpoints
 - [ ] Error code documentation
 
 **Dependencies**: Story 1 (Storage Layer), Story 4 (Task Processing Layer)
@@ -415,7 +404,7 @@ Implement complete REST API layer for v1/ingest including POST /api/v1/ingest fo
 **Story Points**: 13
 
 **Description**:
-Create comprehensive end-to-end integration tests for complete v1/ingest pipeline and implement robust error handling with custom exceptions and retry logic. Test atomic processing, various document types, configurations, and failure scenarios.
+Create comprehensive end-to-end integration tests for complete v1/ingestion pipeline and implement robust error handling with custom exceptions and retry logic. Test atomic processing, various document types, configurations, and failure scenarios.
 
 **Acceptance Criteria**:
 
@@ -442,7 +431,7 @@ Create comprehensive end-to-end integration tests for complete v1/ingest pipelin
 - [ ] Atomic transaction support: rollback on failure (clean up partial chunks)
 
 **3. Integration Tests**:
-- [ ] Create `tests/integration/test_v1_ingest.py`:
+- [ ] Create `tests/integration/test_v1_ingestion.py`:
   - Test: Submit PDF → verify file in Object Storage → verify chunks in MongoDB with correct metadata
   - Test: Submit DOCX → verify atomic processing (extract + chunk + store)
   - Test: Submit HTML → verify automatic cleaning applied
@@ -450,15 +439,15 @@ Create comprehensive end-to-end integration tests for complete v1/ingest pipelin
   - Test: Submit with callback_url → verify webhook called
   - Test: Submit invalid format → verify 400 error
   - Test: Submit oversized file → verify 413 error
-  - Test: Job status updates throughout pipeline (queued → processing → completed)
-  - Test: Job cancellation mid-processing → verify Object Storage and MongoDB cleanup
+  - Test: Task status query returns correct status and chunks
+  - Test: Query with invalid task_id → verify 404 error
   - Test: Multiple concurrent jobs (no interference)
   - Test: Atomic failure behavior (if chunking fails, no partial chunks stored)
 - [ ] Test fixtures for sample documents
 - [ ] Tests verify Object Storage (Blob/GCS) contains documents
 - [ ] Tests verify MongoDB contains chunks with correct indexes
 - [ ] Tests run in CI/CD pipeline
-- [ ] Test coverage >80% for v1/ingest code
+- [ ] Test coverage >80% for v1/ingestion code
 
 **4. Error Scenario Tests**:
 - [ ] Unit tests for each error scenario
@@ -481,12 +470,12 @@ Create comprehensive end-to-end integration tests for complete v1/ingest pipelin
 **Story Points**: 13
 
 **Description**:
-Complete deployment layer including comprehensive API documentation, Kubernetes deployment manifests for AKS/GKE with hybrid storage support, and Prometheus metrics with Grafana dashboards for monitoring the v1/ingest pipeline.
+Complete deployment layer including comprehensive API documentation, Kubernetes deployment manifests for AKS/GKE with hybrid storage support, and Prometheus metrics with Grafana dashboards for monitoring the v1/ingestion pipeline.
 
 **Acceptance Criteria**:
 
 **1. API Documentation**:
-- [ ] Update or create `docs/API_V1_INGEST.md`:
+- [ ] Update or create `docs/API_V1_INGESTION.md`:
   - Endpoint description and purpose
   - Request format with all parameters explained
   - Configuration options:
@@ -501,18 +490,17 @@ Complete deployment layer including comprehensive API documentation, Kubernetes 
   - Error codes with troubleshooting
   - Webhook callback format and payload
 - [ ] Code examples in Python and cURL:
-  - Basic job submission
+  - Basic job submission (POST /v1/ingestion)
   - Custom configuration (single chunking strategy)
   - With metadata and callback
-  - Query job status
-  - Cancel job
-- [ ] Job lifecycle diagram (queued → processing → completed)
+  - Query task status (GET /v1/ingestion/{knowledge_ingestion_task_id})
+- [ ] Task lifecycle diagram (queued → processing → completed)
 - [ ] Configuration best practices (no cleaning config needed, single chunking strategy)
 - [ ] OpenAPI spec updated with descriptions
-- [ ] README.md updated with enhanced v1/ingest section
+- [ ] README.md updated with enhanced v1/ingestion section
 
 **2. Kubernetes Deployments**:
-- [ ] Update API deployment with enhanced v1/ingest code
+- [ ] Update API deployment with enhanced v1/ingestion code
 - [ ] Create or update unified ingestion worker deployment (Celery):
   - Queue: `ingest_queue` (single queue for entire pipeline)
   - Replicas: 2-10 with HPA based on queue length
@@ -617,12 +605,14 @@ Implement Azure Document Intelligence as an alternative extraction library for a
 ## Summary
 
 **Total Stories**: 7 MVP stories + 1 backlog story
-**Estimated Story Points**: ~92 points for MVP (105 with backlog)
+**Estimated Story Points**: ~89 points for MVP (102 with backlog)
 **Estimated Timeline**: 5-6 sprints (10-12 weeks)
 
 **Architecture**: Layered approach with one story per layer
 
 **Key Architecture Decisions**:
+- **Simplified API**: Only 2 endpoints (POST /v1/ingestion, GET /v1/ingestion/{knowledge_ingestion_task_id})
+- **No Job Cancellation**: Removed DELETE endpoint for simpler implementation
 - **Unified Worker Pool**: Single worker type handles complete pipeline (simplified architecture)
 - **Single Queue**: `ingest_queue` for all ingestion tasks (no task chaining complexity)
 - **Atomic Processing**: Extract → Chunk → Store in single task (all-or-nothing)
@@ -637,14 +627,14 @@ Implement Azure Document Intelligence as an alternative extraction library for a
 - **Sprint 2**: Story 2 (Extraction Layer) - 13 points
 - **Sprint 3**: Story 3 (Chunking Layer) - 12 points
 - **Sprint 4**: Story 4 (Task Processing Layer) - 13 points
-- **Sprint 5**: Story 5 (API Layer) - 15 points
+- **Sprint 5**: Story 5 (API Layer) - 12 points
 - **Sprint 6**: Story 6 (Testing Layer) - 13 points
 - **Sprint 7**: Story 7 (Deployment Layer) - 13 points
 
 **Alternative 2-week Sprint Breakdown** (if team has capacity for larger stories):
 - **Sprint 1**: Story 1 + Story 2 (Storage + Extraction) - 26 points
 - **Sprint 2**: Story 3 + Story 4 (Chunking + Tasks) - 25 points
-- **Sprint 3**: Story 5 (API Layer) - 15 points
+- **Sprint 3**: Story 5 (API Layer) - 12 points
 - **Sprint 4**: Story 6 + Story 7 (Testing + Deployment) - 26 points
 
 **Definition of Done**:
@@ -661,5 +651,5 @@ Implement Azure Document Intelligence as an alternative extraction library for a
 - MongoDB connection settings already exist - no need to recreate them
 - Azure Document Intelligence removed from MVP - moved to backlog (Story 8)
 - Each story includes all models, configuration, implementation, tests, and documentation for that layer
-- Focus is on enhancing existing v1/ingest API (no v2 needed since v1 has no users)
+- Focus is on enhancing existing v1/ingestion API (no v2 needed since v1 has no users)
 - Hybrid storage provides significant cost savings (74%) vs MongoDB-only approach

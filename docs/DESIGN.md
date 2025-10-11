@@ -100,8 +100,8 @@ graph TB
         MongoDB_G["  MongoDB  <br/>  Chunks and Metadata  "]
     end
 
-    Client -->|POST /api/v2/ingest| API_A
-    Client -->|POST /api/v2/ingest| API_G
+    Client -->|POST /v1/ingestion| API_A
+    Client -->|POST /v1/ingestion| API_G
 
     API_A -->|Dispatch ingest_task| Redis_A
     Redis_A -->|Consume| Workers_A
@@ -153,7 +153,7 @@ graph TB
 **Key Design Decisions:**
 - **Documents in Object Storage**: 10x cheaper than MongoDB, built for large files, permanent archival
 - **Chunks in MongoDB**: Rich querying, metadata filtering, indexes for fast RAG retrieval
-- **No local storage**: v1 API stored files locally and deleted after processing - v2 stores permanently in cloud
+- **No local storage**: Enhanced v1 now stores files permanently in cloud Object Storage (previously local storage)
 - **Document cleaning**: Automatically performed by Unstructured library during extraction
 
 ### Component Interaction - Sequence Diagram
@@ -168,7 +168,7 @@ sequenceDiagram
     participant BlobStorage as Object Storage (Blob/GCS)
     participant MongoDB as MongoDB
 
-    Client->>API: POST /api/v2/ingest (multipart file upload)
+    Client->>API: POST /v1/ingestion (multipart file upload)
     API->>BlobStorage: Upload document file permanently
     API->>Redis: Queue ingest_task(job_id, file_path, config)
     API->>Redis: Set job status: queued
@@ -186,9 +186,9 @@ sequenceDiagram
         Worker->>Client: POST callback_url {job_id, status: completed}
     end
 
-    Client->>API: GET /api/v2/jobs/{job_id}
+    Client->>API: GET /v1/ingestion/{knowledge_ingestion_task_id}
     API->>Redis: Read job status
-    API-->>Client: {status, progress, stats}
+    API-->>Client: {task_id, status, chunks}
 
     Note over BlobStorage: Documents stored permanently<br/>for archival and reprocessing
     Note over MongoDB: Chunks stored with metadata<br/>for fast RAG retrieval
@@ -232,7 +232,7 @@ End-to-end flow of a document ingestion request showing interactions between cli
 
 #### 1. Submit Ingestion Job
 
-**POST** `/api/v2/ingest`
+**POST** `/v1/ingestion`
 
 **Content-Type:** `multipart/form-data`
 
@@ -302,32 +302,18 @@ End-to-end flow of a document ingestion request showing interactions between cli
 
 #### 2. Get Job Status
 
-**GET** `/api/v2/jobs/{job_id}`
+**GET** `/v1/ingestion/{knowledge_ingestion_task_id}`
 
 **Response:**
 ```json
 {
-  "job_id": "job_abc123",
+  "task_id": "task_abc123",
   "status": "processing",
-  "progress": {
-    "current_step": "chunking",
-    "percent_complete": 50,
-    "extracted": 1,
-    "chunked": 0
-  },
-  "stats": {
-    "chunks_created": 150
-  }
-}
+  "chunks": [
+    "chunk1",
+    "chunk2"
+  ]
 ```
-
-#### 3. Cancel Job
-
-**DELETE** `/api/v2/jobs/{job_id}`
-
-#### 4. Health Check
-
-**GET** `/api/v2/health`
 
 ---
 
