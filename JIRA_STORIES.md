@@ -9,34 +9,27 @@
 
 ---
 
-## Story 1: Storage Layer - Hybrid Object Storage and MongoDB
+## Story 1: Object Storage Layer - Azure Blob and GCS Setup
 
-**Story Title**: Implement hybrid storage layer with Object Storage for documents and MongoDB for chunks
+**Story Title**: Setup Object Storage providers (Azure Blob and GCS) for document storage
 
-**Story Points**: 13
+**Story Points**: 5
 
 **Description**:
-Implement complete storage layer with hybrid architecture: Object Storage (Azure Blob/GCS) for original documents (permanent archival), and MongoDB for chunks (queryable with metadata). Includes all Pydantic models for storage operations, configuration, and implementations. This provides 74% cost savings vs MongoDB-only while maintaining fast RAG retrieval.
+Setup Object Storage layer for permanent document storage using Azure Blob Storage and GCS. Includes storage provider interface, implementations for both cloud providers, factory pattern for provider selection, and configuration. Documents are stored permanently in Object Storage as part of the hybrid storage architecture (74% cost savings vs MongoDB-only). MongoDB chunk storage already exists.
 
 **Acceptance Criteria**:
 
-**1. Pydantic Models**:
-- [ ] Create `src/rag_ingestion_api/models/storage.py`:
-  - `Chunk` model (id, text, metadata, position, job_id, created_at)
-  - `ChunkMetadata` model (source document info, page_number, position, total_chunks)
-  - All models have `extra = "forbid"` in Config
-  - Field validations with proper types
-
-**2. Configuration** (MongoDB settings already exist in infrastructure):
+**1. Configuration**:
 - [ ] Update existing Settings class with:
   - Object Storage config: `OBJECT_STORAGE_PROVIDER` (azure_blob/gcs)
   - Azure Blob: `AZURE_STORAGE_ACCOUNT`, `AZURE_STORAGE_KEY`, `AZURE_STORAGE_CONTAINER`
   - GCS: `GCP_PROJECT_ID`, `GCP_STORAGE_BUCKET`, `GCP_CREDENTIALS_PATH`
-  - Note: MongoDB connection settings already exist (`MONGODB_CONNECTION_STRING`, `MONGODB_DATABASE`, `MONGODB_CHUNKS_COLLECTION`)
+  - Note: MongoDB connection settings already exist
 - [ ] Update `.env.example` with new Object Storage variables
 - [ ] Configuration validates on application startup
 
-**3. Object Storage Implementation**:
+**2. Object Storage Implementation**:
 - [ ] Create `src/rag_ingestion_api/services/storage/object_storage.py`:
   - `IObjectStorageProvider` interface with methods:
     - `upload_document(job_id: str, filename: str, content: bytes) -> str` (returns path)
@@ -47,27 +40,22 @@ Implement complete storage layer with hybrid architecture: Object Storage (Azure
   - `ObjectStorageFactory` returns provider based on `OBJECT_STORAGE_PROVIDER` config
   - Path structure: `jobs/{job_id}/document.*` (permanent storage)
 
-**4. MongoDB Chunk Storage Implementation**:
-- [ ] Create `src/rag_ingestion_api/services/storage/chunk_storage.py`:
-  - `IChunkStore` interface with methods:
-    - `store_chunks(job_id: str, chunks: List[Chunk]) -> int` (returns count)
-    - `get_chunks(job_id: str, filters: Optional[Dict]) -> List[Chunk]`
-    - `delete_chunks(job_id: str) -> int`
-  - `MongoDBChunkStore` implementation with:
-    - Connection to existing MongoDB infrastructure
-    - Stores chunks with indexes on job_id, metadata fields, created_at
-    - Rich query support for RAG retrieval
-    - Transaction support for atomic operations
+**3. Cloud Storage Bucket Setup**:
+- [ ] Create Azure Blob Storage container (via Azure Portal or CLI)
+- [ ] Create GCS bucket (via GCP Console or gcloud CLI)
+- [ ] Configure access credentials for both providers
+- [ ] Document bucket naming conventions and retention policies
 
-**5. Testing**:
-- [ ] Unit tests with mocked Azure SDK, GCS SDK, and MongoDB
-- [ ] Integration tests with real Object Storage and MongoDB
+**4. Testing**:
+- [ ] Unit tests with mocked Azure SDK and GCS SDK
+- [ ] Integration tests with real Azure Blob Storage and GCS
 - [ ] Test coverage >80%
-- [ ] Error handling for cloud API and database failures
+- [ ] Error handling for cloud API failures (connection, authentication, upload/download)
 
-**6. Documentation**:
+**5. Documentation**:
 - [ ] Logging for all storage operations
 - [ ] Configuration documentation
+- [ ] Cloud provider setup guide (Azure Blob and GCS bucket creation)
 - [ ] Architecture documentation (hybrid storage benefits)
 
 **Dependencies**: None
@@ -151,11 +139,16 @@ Implement complete extraction layer using Unstructured library with automatic do
 **Story Points**: 12
 
 **Description**:
-Implement complete chunking layer with recursive, semantic, sentence, and paragraph strategies. Includes Pydantic models for chunking config, all chunker implementations, and factory pattern for single strategy selection. Chunks are designed for storage in MongoDB with rich metadata.
+Implement complete chunking layer with recursive, semantic, sentence, and paragraph strategies. Includes Pydantic models for chunks and chunking config, all chunker implementations, and factory pattern for single strategy selection. Chunks are designed for storage in MongoDB with rich metadata.
 
 **Acceptance Criteria**:
 
 **1. Pydantic Models**:
+- [ ] Create `src/rag_ingestion_api/models/storage.py`:
+  - `Chunk` model (id, text, metadata, position, job_id, created_at)
+  - `ChunkMetadata` model (source document info, page_number, position, total_chunks)
+  - All models have `extra = "forbid"` in Config
+  - Field validations with proper types
 - [ ] Create `src/rag_ingestion_api/models/chunking.py`:
   - `ChunkingStrategy` enum (RECURSIVE, SEMANTIC, SENTENCE, PARAGRAPH)
   - `ChunkingConfig` model with:
@@ -215,7 +208,7 @@ Implement complete chunking layer with recursive, semantic, sentence, and paragr
 - [ ] Chunk size recommendations
 - [ ] Performance characteristics
 
-**Dependencies**: Story 1 (Storage Layer for Chunk model)
+**Dependencies**: None (Chunk models included in this story)
 
 ---
 
@@ -248,7 +241,19 @@ Implement complete task processing layer including Celery configuration for sing
 - [ ] Update `.env.example` with task settings
 - [ ] Configuration validates on application startup
 
-**3. Job Status Manager**:
+**3. MongoDB Chunk Storage Implementation**:
+- [ ] Create `src/rag_ingestion_api/services/storage/chunk_storage.py`:
+  - `IChunkStore` interface with methods:
+    - `store_chunks(job_id: str, chunks: List[Chunk]) -> int` (returns count)
+    - `get_chunks(job_id: str, filters: Optional[Dict]) -> List[Chunk]`
+    - `delete_chunks(job_id: str) -> int`
+  - `MongoDBChunkStore` implementation with:
+    - Connection to existing MongoDB infrastructure
+    - Stores chunks with indexes on job_id, metadata fields, created_at
+    - Rich query support for RAG retrieval
+    - Transaction support for atomic operations
+
+**4. Job Status Manager**:
 - [ ] Create `src/rag_ingestion_api/services/job_manager.py`:
   - `JobStatusManager` class
   - `create_job(job_id, filename, config) -> JobResponse` - stores initial state in Redis
@@ -260,7 +265,7 @@ Implement complete task processing layer including Celery configuration for sing
   - Error handling for Redis connection failures (graceful degradation)
   - Note: Redis serves dual purpose as Celery broker AND job status store
 
-**4. Celery Configuration**:
+**5. Celery Configuration**:
 - [ ] Update Celery app configuration with:
   - Single queue: `ingest_queue`
   - Task routing: all ingestion tasks → ingest_queue
@@ -276,7 +281,7 @@ Implement complete task processing layer including Celery configuration for sing
   - Workers handle complete pipeline (extract → chunk → store)
 - [ ] Celery routes configuration file
 
-**5. Unified Ingestion Task**:
+**6. Unified Ingestion Task**:
 - [ ] Create `src/rag_ingestion_api/tasks/ingest_task.py`:
   - `ingest_document_task(job_id: str, file_path: str, config: dict)`
   - Downloads document from Object Storage (Azure Blob or GCS)
@@ -295,26 +300,26 @@ Implement complete task processing layer including Celery configuration for sing
   - MongoDB indexes created: job_id, metadata fields, created_at
   - Transaction support: rollback on failure (clean up partial chunks if MongoDB write fails)
 
-**6. Error Handling**:
+**7. Error Handling**:
 - [ ] Object Storage download failures (retry 3x)
 - [ ] Extraction failures (mark failed, no retry)
 - [ ] Chunking failures (mark failed, no retry)
 - [ ] MongoDB storage failures (retry 3x with exponential backoff)
 - [ ] Performance metrics logged (extraction time, chunking time, total time)
 
-**7. Testing**:
+**8. Testing**:
 - [ ] Unit tests with mocked Object Storage, extractors, chunkers, and MongoDB
 - [ ] Integration tests with real Celery, Redis, Object Storage, and MongoDB
 - [ ] Test atomic transaction behavior (rollback on failure)
 - [ ] Test webhook notifications
 - [ ] Test coverage >80%
 
-**8. Documentation**:
+**9. Documentation**:
 - [ ] Running workers locally for v1/ingestion
 - [ ] Task architecture and atomic processing
 - [ ] Error handling and retry logic
 
-**Dependencies**: Story 1 (Storage Layer), Story 2 (Extraction Layer), Story 3 (Chunking Layer)
+**Dependencies**: Story 1 (Object Storage), Story 2 (Extraction Layer), Story 3 (Chunking Layer with Chunk models)
 
 ---
 
@@ -393,7 +398,7 @@ Implement complete REST API layer for v1/ingestion including POST /v1/ingestion 
 - [ ] Request/response examples for both endpoints
 - [ ] Error code documentation
 
-**Dependencies**: Story 1 (Storage Layer), Story 4 (Task Processing Layer)
+**Dependencies**: Story 1 (Object Storage), Story 4 (Task Processing Layer with MongoDB chunk storage)
 
 ---
 
@@ -605,7 +610,7 @@ Implement Azure Document Intelligence as an alternative extraction library for a
 ## Summary
 
 **Total Stories**: 7 MVP stories + 1 backlog story
-**Estimated Story Points**: ~89 points for MVP (102 with backlog)
+**Estimated Story Points**: ~81 points for MVP (94 with backlog)
 **Estimated Timeline**: 5-6 sprints (10-12 weeks)
 
 **Architecture**: Layered approach with one story per layer
@@ -623,7 +628,7 @@ Implement Azure Document Intelligence as an alternative extraction library for a
 - **Existing Infrastructure**: MongoDB connection settings already exist
 
 **Recommended Sprint Breakdown**:
-- **Sprint 1**: Story 1 (Storage Layer) - 13 points
+- **Sprint 1**: Story 1 (Object Storage Layer) - 5 points
 - **Sprint 2**: Story 2 (Extraction Layer) - 13 points
 - **Sprint 3**: Story 3 (Chunking Layer) - 12 points
 - **Sprint 4**: Story 4 (Task Processing Layer) - 13 points
@@ -632,7 +637,7 @@ Implement Azure Document Intelligence as an alternative extraction library for a
 - **Sprint 7**: Story 7 (Deployment Layer) - 13 points
 
 **Alternative 2-week Sprint Breakdown** (if team has capacity for larger stories):
-- **Sprint 1**: Story 1 + Story 2 (Storage + Extraction) - 26 points
+- **Sprint 1**: Story 1 + Story 2 (Object Storage + Extraction) - 18 points
 - **Sprint 2**: Story 3 + Story 4 (Chunking + Tasks) - 25 points
 - **Sprint 3**: Story 5 (API Layer) - 12 points
 - **Sprint 4**: Story 6 + Story 7 (Testing + Deployment) - 26 points
@@ -649,6 +654,9 @@ Implement Azure Document Intelligence as an alternative extraction library for a
 **Notes**:
 - This scope assumes existing infrastructure (AKS, GKE, Redis, MongoDB, API framework) is already in place
 - MongoDB connection settings already exist - no need to recreate them
+- Story 1 focuses only on Object Storage setup (Azure Blob and GCS buckets)
+- MongoDB chunk storage implementation moved to Story 4 (Task Processing Layer) where it's used
+- Chunk Pydantic models moved to Story 3 (Chunking Layer) where they're created
 - Azure Document Intelligence removed from MVP - moved to backlog (Story 8)
 - Each story includes all models, configuration, implementation, tests, and documentation for that layer
 - Focus is on enhancing existing v1/ingestion API (no v2 needed since v1 has no users)
