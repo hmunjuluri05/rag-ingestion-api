@@ -20,19 +20,15 @@ The RAG Ingestion API is a scalable, multi-cloud document processing pipeline th
 
 ### Current vs New API Comparison
 
-| Aspect | Current | New Design |
-|--------|---------|------------|
-| **Processing Model** | In-process background tasks (Starlette BackgroundTasks) | Distributed task queue (Celery-based) |
-| **Scalability** | Limited - all stages run in single container | Independent - each stage scales separately via worker pools |
-| **Fault Tolerance** | Task failure = job failure, no retry | Celery automatic retries + task failure handling |
-| **Resource Utilization** | Monolithic - one pod handles all stages | Optimized - dedicated Celery worker pools per stage |
-| **Long-running Jobs** | Pod restart = job loss | Jobs survive pod restarts (state in Redis/broker) |
-| **Bottleneck Handling** | Cannot scale individual stages | Scale chunking workers independently from extractors |
-| **Monitoring** | Limited visibility into pipeline stages | Stage-level metrics via Celery Flower dashboard |
-| **Cost Efficiency** | Over-provisioned for peak load | Auto-scale based on queue length per stage |
-| **Infrastructure Impact** | API pods handle both search and ingestion | Dedicated Celery worker pods for ingestion pipeline |
-| **Concurrency** | Limited by pod CPU/memory | Celery worker pools enable high parallelism |
-| **Document Storage** | Local pod storage, deleted after processing | Permanent storage in Object Storage (Blob/GCS) for reprocessing and archival |
+| Aspect | Current                                                          | New Design                                                                                                             |
+|--------|------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------|
+| **Processing Model** | In-process background tasks (Starlette BackgroundTasks)          | Distributed task queue (Celery) with unified atomic pipeline                                                           |
+| **Scalability** | Limited - cannot scale ingestion independently                   | Auto-scale workers (2-10) based on queue depth and CPU utilization                                                     |
+| **Fault Tolerance** | Task failure = job loss, no retry                                | Application-defined retry logic for transient errors (network, storage), permanent errors (bad files) fail immediately |
+| **Task Recovery** | Pod crash = complete job loss, user needs re-upload the document | Document persists in storage, task can be retried by another Celery worker                                             |
+| **Resource Isolation** | API pods handle both search and ingestion                        | Dedicated Celery worker pods separate from API pods                                                                    |
+| **Monitoring** | Basic metrics only, no task/queue visibility                     | Task-level metrics via Celery Flower, queue depth, worker status                                                       |
+| **Document Storage** | Local pod storage, deleted after processing                      | Permanent storage in Object Storage (Blob/GCS) for archival and reprocessing                                           |
 
 ### Limitations of Current API
 
@@ -589,7 +585,7 @@ class JobStatusResponse(BaseModel):
 **Scaling Behavior:**
 - Automatic scale-up based on workload
 - Gradual scale-down during idle periods
-- Independent scaling per worker type
+- Independent scaling of API pods and ingestion worker pods
 
 ### Task Queue Configuration
 
@@ -614,7 +610,7 @@ class JobStatusResponse(BaseModel):
 **Cost Optimization:**
 - Spot/preemptible instances for workers
 - Automatic node scaling
-- Resource limits per worker type
+- Resource limits per worker pod
 
 **Benefits:**
 - Independent scaling of processing and API layers
@@ -698,6 +694,26 @@ class JobStatusResponse(BaseModel):
 ---
 
 ## Monitoring & Observability
+
+### Monitoring Stack
+
+**Celery Flower:**
+- Web-based real-time monitoring tool for Celery workers and tasks
+- Provides dashboard to view active workers, task queues, and execution status
+- Allows manual task management (retry, revoke) through web UI
+- Access via: `http://flower.example.com`
+
+**Prometheus:**
+- Time-series database for collecting and storing application metrics
+- Scrapes metrics from `/metrics` endpoints exposed by the application
+- Stores metrics with timestamps for historical analysis
+- Powers alerting rules based on metric thresholds
+- Query metrics using PromQL (Prometheus Query Language)
+
+**Grafana:**
+- Visualization and dashboarding tool for Prometheus metrics
+- Creates custom dashboards with graphs, charts, and alerts
+- Provides comprehensive view of pipeline health and performance
 
 ### Metrics (Prometheus)
 
@@ -829,7 +845,7 @@ This design provides a **multi-cloud, scalable RAG ingestion pipeline** with:
 
 **Infrastructure:**
 - Kubernetes-based container orchestration
-- Independent scaling per pipeline stage
+- Unified worker pool with horizontal auto-scaling (2-10 replicas)
 - Dedicated worker node pools
 - Multi-cloud object storage
 
