@@ -83,7 +83,6 @@ graph TB
         end
         Redis_A["  Azure Cache for Redis  <br/>  Celery Broker and Job Status  "]
         Blob_A["  Azure Blob Storage  <br/>  Original Documents  "]
-        MongoDB_A["  MongoDB  <br/>  Chunks and Metadata  "]
     end
 
     subgraph GCP["  GOOGLE CLOUD PLATFORM  "]
@@ -93,8 +92,9 @@ graph TB
         end
         Redis_G["  GCP Memorystore Redis  <br/>  Celery Broker and Job Status  "]
         GCS_G["  Google Cloud Storage  <br/>  Original Documents  "]
-        MongoDB_G["  MongoDB  <br/>  Chunks and Metadata  "]
     end
+
+    MongoDB["  MongoDB Atlas  <br/>  cloud.mongodb.com  <br/>  Chunks and Metadata  "]
 
     Client -->|POST /v1/ingestion| API_A
     Client -->|POST /v1/ingestion| API_G
@@ -104,14 +104,14 @@ graph TB
 
     API_A -->|Upload document| Blob_A
     Workers_A -->|Download document| Blob_A
-    Workers_A -->|Store chunks| MongoDB_A
+    Workers_A -->|Store chunks| MongoDB
 
     API_G -->|Dispatch ingest_task| Redis_G
     Redis_G -->|Consume| Workers_G
 
     API_G -->|Upload document| GCS_G
     Workers_G -->|Download document| GCS_G
-    Workers_G -->|Store chunks| MongoDB_G
+    Workers_G -->|Store chunks| MongoDB
 
     style Client fill:#1E88E5,stroke:#0D47A1,stroke-width:4px,color:#FFFFFF
     style Azure fill:#E3F2FD,stroke:#1565C0,stroke-width:3px
@@ -120,14 +120,13 @@ graph TB
     style Workers_A fill:#1E88E5,stroke:#0D47A1,stroke-width:2px,color:#FFFFFF
     style Redis_A fill:#EF5350,stroke:#C62828,stroke-width:2px,color:#FFFFFF
     style Blob_A fill:#29B6F6,stroke:#0277BD,stroke-width:2px,color:#FFFFFF
-    style MongoDB_A fill:#4DB33D,stroke:#13AA52,stroke-width:2px,color:#FFFFFF
     style GCP fill:#E8F5E9,stroke:#2E7D32,stroke-width:3px
     style GKE fill:#C8E6C9,stroke:#388E3C,stroke-width:2px
     style API_G fill:#66BB6A,stroke:#2E7D32,stroke-width:2px,color:#FFFFFF
     style Workers_G fill:#43A047,stroke:#1B5E20,stroke-width:2px,color:#FFFFFF
     style Redis_G fill:#EF5350,stroke:#C62828,stroke-width:2px,color:#FFFFFF
     style GCS_G fill:#9CCC65,stroke:#558B2F,stroke-width:2px,color:#FFFFFF
-    style MongoDB_G fill:#4DB33D,stroke:#13AA52,stroke-width:2px,color:#FFFFFF
+    style MongoDB fill:#4DB33D,stroke:#13AA52,stroke-width:3px,color:#FFFFFF
 ```
 
 **Complete multi-cloud deployment architecture** showing:
@@ -139,12 +138,12 @@ graph TB
 - **Worker Pool**: Unified ingestion workers (2-10 pods) handle complete pipeline
 - **Hybrid Storage**:
   - **Object Storage** (Azure Blob / GCS): Original documents stored permanently
-  - **MongoDB**: Chunks with metadata, searchable and queryable
+  - **MongoDB Atlas** (cloud.mongodb.com): External cloud database for chunks with metadata, searchable and queryable
 - **Processing Flow**:
   1. API uploads document to Object Storage and dispatches `ingest_task`
-  2. Worker downloads document, extracts+cleans text, chunks it, stores to MongoDB
+  2. Worker downloads document, extracts+cleans text, chunks it, stores to MongoDB Atlas
   3. Worker updates job status to completed
-- **Multi-Cloud**: Identical architecture deployed on Azure (AKS + Redis + Blob + MongoDB) and GCP (GKE + Memorystore + GCS + MongoDB)
+- **Multi-Cloud**: Identical architecture deployed on Azure (AKS + Redis + Blob) and GCP (GKE + Memorystore + GCS), both connecting to shared MongoDB Atlas (cloud.mongodb.com)
 
 **Key Design Decisions:**
 - **Documents in Object Storage**: 10x cheaper than MongoDB, built for large files, permanent archival
@@ -162,7 +161,7 @@ sequenceDiagram
     participant Redis as Redis (Celery Broker)
     participant Worker as Ingestion Worker
     participant BlobStorage as Object Storage (Blob/GCS)
-    participant MongoDB as MongoDB
+    participant MongoDB as MongoDB Atlas (cloud.mongodb.com)
 
     Client->>API: POST /v1/ingestion (multipart file upload)
     API->>BlobStorage: Upload document file permanently
@@ -190,7 +189,7 @@ sequenceDiagram
     Note over MongoDB: Chunks stored with metadata<br/>for fast RAG retrieval
 ```
 
-End-to-end flow of a document ingestion request showing interactions between client, FastAPI, unified Celery worker, cloud storage (Blob/GCS), MongoDB, and Redis. Demonstrates job creation, file upload, atomic processing (extract → chunk → store in single task), status updates, and optional webhook callbacks.
+End-to-end flow of a document ingestion request showing interactions between client, FastAPI, unified Celery worker, cloud storage (Blob/GCS), MongoDB Atlas (cloud.mongodb.com), and Redis. Demonstrates job creation, file upload, atomic processing (extract → chunk → store in single task), status updates, and optional webhook callbacks.
 
 **Note:** The worker performs extraction (with automatic cleaning by Unstructured library) and chunking as a single atomic operation, ensuring either the entire job succeeds or fails together.
 
@@ -218,7 +217,7 @@ End-to-end flow of a document ingestion request showing interactions between cli
 - Object Storage: Azure Blob Storage (AKS) / Google Cloud Storage (GKE)
 - Task Broker/Backend: Azure Cache for Redis (AKS) / GCP Memorystore Redis (GKE)
 - Job State: Redis for task status and progress tracking
-- Chunk Storage: MongoDB for queryable chunks with metadata
+- Chunk Storage: MongoDB Atlas (cloud.mongodb.com) - external cloud database for queryable chunks with metadata
 
 ---
 
@@ -500,6 +499,9 @@ class JobStatusResponse(BaseModel):
 | **Kubernetes** | Azure Kubernetes Service (AKS) | Google Kubernetes Engine (GKE) |
 | **Redis** | Azure Cache for Redis | GCP Memorystore (Redis) |
 | **Object Storage** | Azure Blob Storage | Google Cloud Storage (GCS) |
+| **Database** | MongoDB Atlas (cloud.mongodb.com) | MongoDB Atlas (cloud.mongodb.com) |
+
+**Note:** MongoDB Atlas is an external cloud service (cloud.mongodb.com) shared by both Azure and GCP deployments.
 
 ---
 
@@ -825,6 +827,7 @@ This design provides a **multi-cloud, scalable RAG ingestion pipeline** with:
 - ✅ **Multi-Cloud Support**: Deployable on Azure (AKS) and GCP (GKE)
   - **Azure**: Azure Cache for Redis, Azure Blob Storage, AKS
   - **GCP**: GCP Memorystore (Redis), Google Cloud Storage, GKE
+  - **External Database**: MongoDB Atlas (cloud.mongodb.com) shared by both clouds
 - ✅ **Cloud Abstraction**: Unified interface across cloud providers
 - ✅ **Distributed Processing**: Task queue-based asynchronous processing
 - ✅ **Atomic Pipeline**: Extract (with built-in cleaning) → Chunk → Store in single task
