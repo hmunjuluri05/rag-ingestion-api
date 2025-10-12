@@ -300,21 +300,38 @@ Implement complete task processing layer including Celery configuration for sing
   - MongoDB indexes created: job_id, metadata fields, created_at
   - Transaction support: rollback on failure (clean up partial chunks if MongoDB write fails)
 
-**7. Error Handling**:
-- [ ] Object Storage download failures (retry 3x)
-- [ ] Extraction failures (mark failed, no retry)
-- [ ] Chunking failures (mark failed, no retry)
-- [ ] MongoDB storage failures (retry 3x with exponential backoff)
+**7. Custom Exception Classes**:
+- [ ] Create `src/rag_ingestion_api/exceptions.py`:
+  - `ExtractionError` (base class for extraction failures)
+  - `UnsupportedFormatError` (invalid file format)
+  - `CorruptedFileError` (cannot parse document)
+  - `ChunkingError` (chunking failure)
+  - `ObjectStorageError` (Blob/GCS storage failure)
+  - `MongoDBError` (MongoDB chunk storage failure)
+
+**8. Error Handling & Retry Logic**:
+- [ ] Implement retry logic for transient errors:
+  - Object Storage failures: 3 retries with exponential backoff
+  - MongoDB failures: 3 retries with exponential backoff
+  - Network errors: 3 retries
+  - Rate limiting: retry with backoff
+- [ ] Non-retryable errors logged and job marked as failed:
+  - Unsupported format, corrupted file, invalid config (extraction/chunking failures)
+- [ ] Error details stored in job status:
+  - error_message, error_type, failed_at timestamp
+- [ ] Atomic transaction support: rollback on failure (clean up partial chunks)
 - [ ] Performance metrics logged (extraction time, chunking time, total time)
 
-**8. Testing**:
+**10. Testing**:
 - [ ] Unit tests with mocked Object Storage, extractors, chunkers, and MongoDB
 - [ ] Integration tests with real Celery, Redis, Object Storage, and MongoDB
 - [ ] Test atomic transaction behavior (rollback on failure)
 - [ ] Test webhook notifications
+- [ ] Test error scenarios for each exception type
+- [ ] Test retry behavior for transient vs permanent errors
 - [ ] Test coverage >80%
 
-**9. Documentation**:
+**11. Documentation**:
 - [ ] Running workers locally for v1/ingestion
 - [ ] Task architecture and atomic processing
 - [ ] Error handling and retry logic
@@ -393,50 +410,8 @@ Implement complete REST API layer for v1/ingestion including POST /v1/ingestion 
 - [ ] Test chunks retrieval
 - [ ] Test coverage >80%
 
-**6. Documentation**:
-- [ ] OpenAPI documentation auto-generated
-- [ ] Request/response examples for both endpoints
-- [ ] Error code documentation
-
-**Dependencies**: Story 1 (Object Storage), Story 4 (Task Processing Layer with MongoDB chunk storage)
-
----
-
-## Story 6: Testing Layer - Integration Tests and Error Handling
-
-**Story Title**: Implement comprehensive integration tests and error handling for complete pipeline
-
-**Story Points**: 13
-
-**Description**:
-Create comprehensive end-to-end integration tests for complete v1/ingestion pipeline and implement robust error handling with custom exceptions and retry logic. Test atomic processing, various document types, configurations, and failure scenarios.
-
-**Acceptance Criteria**:
-
-**1. Custom Exception Classes**:
-- [ ] Create `src/rag_ingestion_api/exceptions.py`:
-  - `ExtractionError` (base class for extraction failures, includes automatic cleaning)
-  - `UnsupportedFormatError` (invalid file format)
-  - `CorruptedFileError` (cannot parse document)
-  - `ChunkingError` (chunking failure)
-  - `ObjectStorageError` (Blob/GCS storage failure)
-  - `MongoDBError` (MongoDB chunk storage failure)
-  - Note: No `CleaningError` - cleaning is automatic in extraction step
-
-**2. Retry Logic**:
-- [ ] Implement retry logic for transient errors:
-  - Object Storage failures: 3 retries with exponential backoff
-  - MongoDB failures: 3 retries with exponential backoff
-  - Network errors: 3 retries
-  - Rate limiting: retry with backoff
-- [ ] Non-retryable errors logged and job marked as failed:
-  - Unsupported format, corrupted file, invalid config
-- [ ] Error details stored in job status:
-  - error_message, error_type, failed_at timestamp
-- [ ] Atomic transaction support: rollback on failure (clean up partial chunks)
-
-**3. Integration Tests**:
-- [ ] Create `tests/integration/test_v1_ingestion.py`:
+**6. End-to-End Integration Tests**:
+- [ ] Create `tests/integration/test_v1_ingestion_e2e.py`:
   - Test: Submit PDF → verify file in Object Storage → verify chunks in MongoDB with correct metadata
   - Test: Submit DOCX → verify atomic processing (extract + chunk + store)
   - Test: Submit HTML → verify automatic cleaning applied
@@ -448,27 +423,24 @@ Create comprehensive end-to-end integration tests for complete v1/ingestion pipe
   - Test: Query with invalid task_id → verify 404 error
   - Test: Multiple concurrent jobs (no interference)
   - Test: Atomic failure behavior (if chunking fails, no partial chunks stored)
-- [ ] Test fixtures for sample documents
+- [ ] Test fixtures for sample documents (PDF, DOCX, HTML, TXT)
 - [ ] Tests verify Object Storage (Blob/GCS) contains documents
 - [ ] Tests verify MongoDB contains chunks with correct indexes
-- [ ] Tests run in CI/CD pipeline
-- [ ] Test coverage >80% for v1/ingestion code
-
-**4. Error Scenario Tests**:
-- [ ] Unit tests for each error scenario
-- [ ] Integration tests for retry behavior with Object Storage and MongoDB
 - [ ] Test graceful degradation on Redis failures
+- [ ] Tests run in CI/CD pipeline
 
-**5. Documentation**:
+**8. Documentation**:
+- [ ] OpenAPI documentation auto-generated
+- [ ] Request/response examples for both endpoints
+- [ ] Error code documentation
 - [ ] Running integration tests locally
 - [ ] Error types and troubleshooting guide
-- [ ] Retry behavior documentation
 
-**Dependencies**: Story 5 (API Layer)
+**Dependencies**: Story 1 (Object Storage), Story 4 (Task Processing Layer with MongoDB chunk storage and exceptions)
 
 ---
 
-## Story 7: Deployment Layer - Documentation, Kubernetes, and Monitoring
+## Story 6: Deployment Layer - Documentation, Kubernetes, and Monitoring
 
 **Story Title**: Complete deployment layer with API documentation, Kubernetes manifests, and monitoring
 
@@ -564,13 +536,13 @@ Complete deployment layer including comprehensive API documentation, Kubernetes 
 - [ ] Monitoring and alerting guide
 - [ ] Troubleshooting runbook
 
-**Dependencies**: Story 6 (Testing Layer)
+**Dependencies**: Story 5 (API Layer with end-to-end tests)
 
 ---
 
 ## Backlog: Future Enhancements
 
-### Story 8: Azure Document Intelligence Integration (FUTURE)
+### Story 7: Azure Document Intelligence Integration (FUTURE)
 
 **Story Title**: Add Azure Document Intelligence as extraction library option
 
@@ -609,11 +581,11 @@ Implement Azure Document Intelligence as an alternative extraction library for a
 
 ## Summary
 
-**Total Stories**: 7 MVP stories + 1 backlog story
-**Estimated Story Points**: ~81 points for MVP (94 with backlog)
-**Estimated Timeline**: 5-6 sprints (10-12 weeks)
+**Total Stories**: 6 MVP stories + 1 backlog story
+**Estimated Story Points**: ~68 points for MVP (81 with backlog)
+**Estimated Timeline**: 4-6 sprints (8-12 weeks)
 
-**Architecture**: Layered approach with one story per layer
+**Architecture**: Layered approach with one story per layer, testing integrated into each story
 
 **Key Architecture Decisions**:
 - **Simplified API**: Only 2 endpoints (POST /v1/ingestion, GET /v1/ingestion/{knowledge_ingestion_task_id})
@@ -626,21 +598,20 @@ Implement Azure Document Intelligence as an alternative extraction library for a
 - **Single Chunking Strategy**: Per-job selection (not multiple strategies)
 - **Always-Running Workers**: Min 2 replicas (not scale-to-zero) for fast response
 - **Existing Infrastructure**: MongoDB connection settings already exist
+- **Testing Integrated**: Unit and integration tests part of each layer (no separate testing story)
 
 **Recommended Sprint Breakdown**:
 - **Sprint 1**: Story 1 (Object Storage Layer) - 5 points
 - **Sprint 2**: Story 2 (Extraction Layer) - 13 points
 - **Sprint 3**: Story 3 (Chunking Layer) - 12 points
-- **Sprint 4**: Story 4 (Task Processing Layer) - 13 points
-- **Sprint 5**: Story 5 (API Layer) - 12 points
-- **Sprint 6**: Story 6 (Testing Layer) - 13 points
-- **Sprint 7**: Story 7 (Deployment Layer) - 13 points
+- **Sprint 4**: Story 4 (Task Processing Layer + Exceptions) - 13 points
+- **Sprint 5**: Story 5 (API Layer + E2E Tests) - 12 points
+- **Sprint 6**: Story 6 (Deployment Layer) - 13 points
 
 **Alternative 2-week Sprint Breakdown** (if team has capacity for larger stories):
 - **Sprint 1**: Story 1 + Story 2 (Object Storage + Extraction) - 18 points
-- **Sprint 2**: Story 3 + Story 4 (Chunking + Tasks) - 25 points
-- **Sprint 3**: Story 5 (API Layer) - 12 points
-- **Sprint 4**: Story 6 + Story 7 (Testing + Deployment) - 26 points
+- **Sprint 2**: Story 3 + Story 4 (Chunking + Tasks + Exceptions) - 25 points
+- **Sprint 3**: Story 5 + Story 6 (API + E2E Tests + Deployment) - 25 points
 
 **Definition of Done**:
 - Code reviewed and approved
@@ -655,9 +626,12 @@ Implement Azure Document Intelligence as an alternative extraction library for a
 - This scope assumes existing infrastructure (AKS, GKE, Redis, MongoDB, API framework) is already in place
 - MongoDB connection settings already exist - no need to recreate them
 - Story 1 focuses only on Object Storage setup (Azure Blob and GCS buckets)
-- MongoDB chunk storage implementation moved to Story 4 (Task Processing Layer) where it's used
-- Chunk Pydantic models moved to Story 3 (Chunking Layer) where they're created
-- Azure Document Intelligence removed from MVP - moved to backlog (Story 8)
+- MongoDB chunk storage implementation in Story 4 (Task Processing Layer) where it's used
+- Chunk Pydantic models in Story 3 (Chunking Layer) where they're created
+- Custom exception classes in Story 4 (Task Processing Layer) where they're used
+- End-to-end integration tests in Story 5 (API Layer) where they test the complete flow
+- Azure Document Intelligence removed from MVP - moved to backlog (Story 7)
 - Each story includes all models, configuration, implementation, tests, and documentation for that layer
+- Testing is integrated into each story's Definition of Done (no separate testing story)
 - Focus is on enhancing existing v1/ingestion API (no v2 needed since v1 has no users)
 - Hybrid storage provides significant cost savings (74%) vs MongoDB-only approach
