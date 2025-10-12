@@ -505,8 +505,8 @@ Complete deployment layer including comprehensive API documentation, Kubernetes 
 - [ ] README.md updated with enhanced v1/ingestion section
 
 **2. Kubernetes Deployments**:
-- [ ] Update API deployment with enhanced v1/ingestion code
-- [ ] Create or update unified ingestion worker deployment (Celery):
+- [ ] Deploy enhanced v1/ingestion API code (no changes to API pod deployment configuration)
+- [ ] Create unified ingestion worker deployment (Celery):
   - Queue: `ingest_queue` (single queue for entire pipeline)
   - Replicas: 2-10 with HPA based on queue length
   - Resource requests: CPU 1000m, Memory 2Gi

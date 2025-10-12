@@ -132,7 +132,7 @@ graph TB
 
 **Complete multi-cloud deployment architecture** showing:
 - **Client Layer**: Applications submit jobs via REST API
-- **API Layer**: FastAPI pods (3-10 replicas) handle both search and ingestion endpoints
+- **API Layer**: FastAPI pods (1-2 replicas) handle both search and ingestion endpoints
 - **Task Queue**: Redis-backed Celery with single queue (`ingest_queue`)
   - **Azure**: Azure Cache for Redis
   - **GCP**: GCP Memorystore (Redis)
@@ -573,7 +573,9 @@ class JobStatusResponse(BaseModel):
 | Component | Replicas (Min-Max) | CPU | Memory | Auto-scale Metric |
 |-----------|-------------------|-----|--------|-------------------|
 | API | 3-10 | 500m | 512Mi | CPU > 70% |
-| Ingestion Workers | 2-10 | 1000m | 2Gi | Celery queue length + CPU |
+| Ingestion Workers (NEW) | 2-10 | 1000m | 2Gi | Celery queue length + CPU |
+
+**Note:** API pod deployment configuration remains unchanged. Only the API code is updated to dispatch to Celery workers instead of using BackgroundTasks.
 
 ### Auto-scaling Strategy
 
