@@ -77,21 +77,23 @@ graph TB
     Client["Client Application"]
 
     subgraph MultiCloud["MULTI-CLOUD DEPLOYMENT  (Azure + GCP)"]
-        subgraph K8s["Kubernetes  (AKS on Azure, GKE on GCP)"]
-            API["KBS API Pods<br/>(deployed on both clouds)"]
-            Workers["Ingestion Workers - Celery<br/>Replicas: 2-10<br/>(deployed on both clouds)"]
+        subgraph K8s["Kubernetes - AKS on Azure, GKE on GCP"]
+            API["KBS API Pods<br/>deployed on both clouds"]
+            Workers["Ingestion Workers - Celery<br/>Queue: ingest_queue, Replicas: 2-10<br/>Embedding and Indexing runs inside"]
         end
         Redis["Redis<br/>Azure Cache for Redis (Azure)<br/>GCP Memorystore (GCP)<br/>Celery Broker and Job Status"]
         ObjectStorage["Object Storage<br/>Azure Blob Storage (Azure)<br/>Google Cloud Storage (GCP)<br/>Original Documents"]
-        MongoDB["MongoDB<br/>(separate instance per cloud)<br/>Chunks and Metadata"]
+        MongoDB["MongoDB<br/>(separate instance per cloud)<br/>Chunks, Embeddings, and Vector Indexes"]
     end
 
     Client -->|POST /v2/ingestion<br/>knowledge_set_id + file| API
-    API -->|Dispatch ingest_task| Redis
-    Redis -->|Consume| Workers
-    API -->|Upload document| ObjectStorage
+    API -->|1. Upload document| ObjectStorage
+    API -->|2. Queue ingest_task| Redis
+    Redis -->|3. Consume| Workers
     Workers -->|Download document| ObjectStorage
     Workers -->|Store chunks| MongoDB
+    Workers -->|Generate embeddings<br/>code inside worker| MongoDB
+    Workers -->|Index vectors<br/>code inside worker| MongoDB
 
     style Client fill:#1E88E5,stroke:#0D47A1,stroke-width:4px,color:#FFFFFF
     style MultiCloud fill:#E8F5E9,stroke:#2E7D32,stroke-width:4px
@@ -106,23 +108,40 @@ graph TB
 **Complete multi-cloud deployment architecture** showing:
 - **Client Layer**: Applications submit jobs via REST API with `knowledge_set_id` (references existing Knowledge Set entity)
 - **API Layer**: FastAPI pods (1-2 replicas) deployed identically on both Azure and GCP
-- **Task Queue**: Redis-backed Celery with single queue (`ingest_queue`)
+  - **API Responsibility**: ONLY validates metadata, uploads document to Object Storage, queues task, returns 202 immediately
+  - **No Processing in API**: All heavy processing happens asynchronously in workers
+- **Task Queue**: Redis-backed Celery with single queue
+  - `ingest_queue` - Single queue for all ingestion tasks
   - **Azure**: Azure Cache for Redis
   - **GCP**: GCP Memorystore (Redis)
-- **Worker Pool**: Unified ingestion workers (2-10 pods) deployed identically on both clouds, handle complete pipeline
-- **Hybrid Storage**:
+- **Worker Pool**: Unified ingestion workers (2-10 pods) that handle complete pipeline
+  - Extract text and chunk documents
+  - Store chunks to MongoDB
+  - **Run embedding code inside worker pods** to generate embeddings
+  - **Run indexing code inside worker pods** to index vectors
+  - All processing happens within the Celery worker pods in Kubernetes
+- **Storage**:
   - **Object Storage**: Azure Blob Storage (Azure) / Google Cloud Storage (GCP) - original documents stored permanently
-  - **MongoDB**: Separate MongoDB instance within each cloud for chunks with metadata
-- **Processing Flow**:
+  - **MongoDB**: Separate MongoDB instance within each cloud for chunks, embeddings, and vector indexes (MongoDB serves as vector database)
+- **Processing Flow** (Fully Asynchronous):
   1. API receives file upload with `knowledge_set_id` and validates metadata against Knowledge Set schema
-  2. API uploads document to Object Storage and dispatches `ingest_task`
-  3. Worker downloads document, extracts+cleans text with Unstructured library, chunks it, stores chunks to MongoDB under the specified Knowledge Set
-  4. Worker updates job status to completed
+  2. API uploads document to Object Storage and queues `ingest_task` to `ingest_queue`
+  3. **API returns 202 immediately** - no processing in API
+  4. Ingestion worker extracts+cleans text, chunks it, stores chunks to MongoDB
+  5. Worker runs embedding code (inside worker pod) to generate and store embeddings to MongoDB
+  6. Worker runs indexing code (inside worker pod) to create vector indexes in MongoDB
+  7. Worker updates job status to completed
 - **Multi-Cloud**: Identical architecture deployed on Azure (AKS + Redis + Blob + MongoDB) and GCP (GKE + Memorystore + GCS + MongoDB)
 
 **Key Design Decisions:**
+- **API Only Dispatches**: FastAPI endpoint only validates, uploads, and queues - returns 202 in <100ms
+- **Fully Async Processing**: All extraction, chunking, embedding, and indexing happens in workers
+- **Single Worker Pool**: Unified workers handle complete pipeline (extract → chunk → embed → index)
+- **Embedding/Indexing Inside Workers**: All code runs inside Celery worker pods in Kubernetes (no external services)
+- **Single Queue**: `ingest_queue` for all ingestion tasks (simplified architecture)
+- **MongoDB as Vector DB**: MongoDB serves as both document store and vector database (no separate vector DB)
 - **Documents in Object Storage**: 10x cheaper than MongoDB, built for large files, permanent archival
-- **Chunks in MongoDB**: Rich querying, metadata filtering, indexes for fast RAG retrieval
+- **Chunks and Vectors in MongoDB**: Rich querying, metadata filtering, vector indexes for fast RAG retrieval
 - **No local storage**: Enhanced v1 now stores files permanently in cloud Object Storage (previously local storage)
 - **Document cleaning**: Automatically performed by Unstructured library during extraction
 
@@ -136,7 +155,7 @@ sequenceDiagram
     participant Redis as Redis (Celery Broker)
     participant Worker as Ingestion Worker
     participant BlobStorage as Object Storage (Blob/GCS)
-    participant MongoDB as MongoDB
+    participant MongoDB as MongoDB (Vector DB)
 
     Client->>API: POST /v2/ingestion (multipart file upload)
     API->>API: Validate metadata against Knowledge Set schema
@@ -144,13 +163,24 @@ sequenceDiagram
     API->>Redis: Queue ingest_task(job_id, file_path, config)
     API->>Redis: Set job status: queued
     API-->>Client: 202 {job_id, status: queued}
+    Note over API,Client: API returns immediately!<br/>No processing in API.
 
-    Redis->>Worker: Consume ingest_task
-    Worker->>Redis: Update job status: processing
+    Redis->>Worker: Consume ingest_task from ingest_queue
+    Worker->>Redis: Update job status: processing - extracting
     Worker->>BlobStorage: Download document
     Worker->>Worker: Extract text (with auto-cleaning)
+    Worker->>Redis: Update job status: processing - chunking
     Worker->>Worker: Split text into chunks with metadata
-    Worker->>MongoDB: Store chunks with indexes
+    Worker->>MongoDB: Store chunks
+
+    Worker->>Redis: Update job status: processing - embedding
+    Worker->>Worker: Run embedding code (inside worker pod)
+    Worker->>MongoDB: Store embeddings
+
+    Worker->>Redis: Update job status: processing - indexing
+    Worker->>Worker: Run indexing code (inside worker pod)
+    Worker->>MongoDB: Create vector indexes
+
     Worker->>Redis: Set job status: completed
 
     opt Webhook configured
@@ -162,14 +192,22 @@ sequenceDiagram
     API-->>Client: {task_id, status, chunks}
 
     Note over BlobStorage: Documents stored permanently<br/>for archival and reprocessing
-    Note over MongoDB: Chunks stored with metadata<br/>for fast RAG retrieval
+    Note over MongoDB: Chunks, embeddings, and vector indexes<br/>stored for fast RAG retrieval
 ```
 
-End-to-end flow of a document ingestion request showing interactions between client, FastAPI, unified Celery worker, cloud storage (Blob/GCS), MongoDB, and Redis. Demonstrates metadata validation, job creation, file upload, atomic processing (extract → chunk → store in single task), status updates, and optional webhook callbacks.
+End-to-end flow of a document ingestion request showing interactions between client, FastAPI, unified Celery worker, cloud storage (Blob/GCS), MongoDB (vector database), and Redis. Demonstrates metadata validation, job creation, file upload, **fully asynchronous processing** (extract → chunk → embed → index), status updates, and optional webhook callbacks.
 
 **Note:**
-- **Metadata Validation**: The API validates `config.embedding.metadata` against the schema defined at the Knowledge Set level **before** uploading the file or dispatching the task. If validation fails, the request is rejected with a 400 error.
-- **Atomic Processing**: The worker performs extraction (with automatic cleaning by Unstructured library) and chunking as a single atomic operation, ensuring either the entire job succeeds or fails together.
+- **API Returns Immediately**: The API only validates metadata, uploads document to Object Storage, queues the task, and returns 202. No processing happens in the API layer.
+- **Metadata Validation**: The API validates `config.embedding.metadata` against the schema defined at the Knowledge Set level **before** uploading the file or dispatching the task. If validation fails, the request is rejected with a 400 or 422 error.
+- **Single Task, Complete Pipeline**: One Celery task handles the complete pipeline:
+  1. Extract and chunk document
+  2. Store chunks to MongoDB
+  3. Run embedding code (inside worker pod) to generate and store embeddings to MongoDB
+  4. Run indexing code (inside worker pod) to create vector indexes in MongoDB
+  5. Mark job as completed
+- **Code Inside Workers**: All embedding and indexing code runs inside Celery worker pods in Kubernetes (no external services)
+- **MongoDB as Vector DB**: MongoDB serves as both document store and vector database
 
 ---
 
@@ -177,25 +215,30 @@ End-to-end flow of a document ingestion request showing interactions between cli
 
 **Layer 1: API Layer**
 - FastAPI REST endpoints for ingestion and status
-- Job validation and configuration
+- **Responsibility**: Validate metadata, upload to Object Storage, queue first task, return 202
+- **No Processing**: All heavy processing delegated to workers
 - Celery task dispatcher for async job submission
 
 **Layer 2: Task Queue (Celery + Redis)**
-- Single queue: `ingest_queue`
-- Atomic task processing (extract → chunk → store)
+- Single queue: `ingest_queue` for all ingestion tasks
+- Complete pipeline processing in single task (extract → chunk → embed → index)
 - Automatic retries with exponential backoff
 
 **Layer 3: Worker Pool (Kubernetes - AKS/GKE)**
-- Unified Celery worker pods (2-10 replicas)
-- Auto-scaling based on queue length + CPU
-- Handles complete ingestion pipeline in single task
+- **Unified Ingestion Workers** (2-10 replicas): Handle complete pipeline
+  - Extract text and chunk documents
+  - Store chunks to MongoDB
+  - Run embedding code inside worker pods to generate embeddings
+  - Run indexing code inside worker pods to create vector indexes
+  - All processing happens within worker pods (no external service calls)
+- Auto-scaling based on queue depth + CPU utilization
 - Identical deployments across AKS and GKE
 
 **Layer 4: Storage (Cloud-specific with unified interface)**
 - Object Storage: Azure Blob Storage (AKS) / Google Cloud Storage (GKE)
 - Task Broker/Backend: Azure Cache for Redis (AKS) / GCP Memorystore Redis (GKE)
 - Job State: Redis for task status and progress tracking
-- Chunk Storage: MongoDB - separate instance within each cloud for queryable chunks with metadata
+- MongoDB (Vector Database): Separate instance within each cloud for chunks, embeddings, and vector indexes
 
 ---
 
@@ -206,6 +249,14 @@ End-to-end flow of a document ingestion request showing interactions between cli
 #### 1. Submit Ingestion Job
 
 **POST** `/v2/ingestion`
+
+**API Behavior:**
+- ✅ Validates `knowledge_set_id` exists
+- ✅ Validates `config.embedding.metadata` against Knowledge Set schema
+- ✅ Uploads document to Object Storage (Azure Blob / GCS)
+- ✅ Queues `ingest_task` to `ingest_queue`
+- ✅ Returns **202 Accepted** immediately (typically <100ms)
+- ❌ **NO processing happens in API** - all extraction, chunking, embedding, and indexing happen asynchronously in separate worker pools
 
 **Content-Type:** `multipart/form-data`
 
@@ -292,10 +343,10 @@ with open("document.pdf", "rb") as f:
 - **Extraction**: Uses Unstructured library (only supported option) which automatically handles text extraction and cleaning - no additional configuration needed
 - **Metadata**: Must be provided inside `config.embedding.metadata` and conform to the schema defined at the Knowledge Set level. Validated before ingestion starts.
 
-**Response:**
+**Success Response (202 Accepted):**
 ```json
 {
-  "job_id": "job_abc123",
+  "task_id": "knowledge_ingestion_task_id",
   "status": "queued",
   "submitted_at": "2025-10-05T10:30:00Z",
   "filename": "document.pdf",
@@ -304,16 +355,33 @@ with open("document.pdf", "rb") as f:
 ```
 
 **Error Responses:**
-- **400 Bad Request**: Invalid configuration, missing required fields, unsupported file format, or **metadata schema validation failure**
-  ```json
-  {
-    "error": "Metadata validation failed",
-    "details": "Field 'author' is required but not provided. Field 'priority' must be one of: low, medium, high"
-  }
-  ```
-- **404 Not Found**: Knowledge Set ID does not exist
-- **413 Payload Too Large**: File exceeds maximum size limit (100MB)
-- **500 Internal Server Error**: Object Storage failure, queue failure
+
+**422 Unprocessable Entity** - Request validation failed (FastAPI/Pydantic validation errors):
+```json
+{
+  "detail": [
+    {
+      "loc": ["string", 0],
+      "msg": "string",
+      "type": "string"
+    }
+  ]
+}
+```
+
+**400 Bad Request** - Invalid configuration, missing required fields, unsupported file format, or **metadata schema validation failure**:
+```json
+{
+  "error": "Metadata validation failed",
+  "details": "Field 'author' is required but not provided. Field 'priority' must be one of: low, medium, high"
+}
+```
+
+**404 Not Found** - Knowledge Set ID does not exist
+
+**413 Payload Too Large** - File exceeds maximum size limit (100MB)
+
+**500 Internal Server Error** - Object Storage failure, queue failure
 
 #### 2. Get Job Status
 
@@ -512,9 +580,9 @@ class JobStatusResponse(BaseModel):
 | **Kubernetes** | Azure Kubernetes Service (AKS) | Google Kubernetes Engine (GKE) |
 | **Redis** | Azure Cache for Redis | GCP Memorystore (Redis) |
 | **Object Storage** | Azure Blob Storage | Google Cloud Storage (GCS) |
-| **Database** | MongoDB | MongoDB |
+| **Database/Vector DB** | MongoDB | MongoDB |
 
-**Note:** Each cloud environment has its own separate MongoDB instance for data isolation.
+**Note:** Each cloud environment has its own separate MongoDB instance for data isolation. MongoDB serves as both document store and vector database.
 
 ---
 
@@ -579,9 +647,12 @@ class JobStatusResponse(BaseModel):
 | Component | Replicas (Min-Max) | CPU | Memory | Auto-scale Metric |
 |-----------|-------------------|-----|--------|-------------------|
 | API | 3-10 | 500m | 512Mi | CPU > 70% |
-| Ingestion Workers (NEW) | 2-10 | 1000m | 2Gi | Celery queue length + CPU |
+| Ingestion Workers | 2-10 | 2000m | 4Gi | ingest_queue length + CPU |
 
-**Note:** API pod deployment configuration remains unchanged. Only the API code is updated to dispatch to Celery workers instead of using BackgroundTasks.
+**Note:**
+- API pod deployment configuration remains unchanged. Only the API code is updated to queue tasks instead of using BackgroundTasks.
+- Ingestion workers need more resources (2000m CPU, 4Gi memory) since they handle the complete pipeline including calling embedding and indexing services
+- Workers scale based on ingest_queue depth
 
 ### Auto-scaling Strategy
 
@@ -598,15 +669,21 @@ class JobStatusResponse(BaseModel):
 ### Task Queue Configuration
 
 **Queue Setup:**
-- Single queue: `ingest_queue`
-- All ingestion tasks routed to same queue
-- Simplified task routing and monitoring
+- Single queue for complete pipeline:
+  - `ingest_queue` - All ingestion tasks (extract + chunk + embed + index)
+- Unified worker pool handles complete pipeline
+- No task chaining needed (single atomic task)
 
 **Worker Configuration:**
-- Unified worker pool handles complete pipeline
-- Concurrency settings optimized for full pipeline processing
-- Task prefetch limits
-- Retry policies and backoff strategies
+- **Ingestion Workers**: Consume from `ingest_queue`, handle complete pipeline:
+  - Extract text and chunk documents
+  - Store chunks to MongoDB
+  - Run embedding code (inside worker pod) to generate embeddings
+  - Run indexing code (inside worker pod) to create vector indexes
+  - All processing happens within the worker pod in Kubernetes
+- Concurrency settings based on worker resources
+- Task prefetch limits for optimal throughput
+- Retry policies and backoff strategies for transient errors
 
 ### Worker Node Pools
 
@@ -678,14 +755,30 @@ class JobStatusResponse(BaseModel):
 - Retry logic
 - Logging
 
-**Task Lifecycle (Atomic Operation):**
-1. Receive `ingest_task` from queue
-2. Download document from Object Storage
-3. Extract text (with automatic cleaning)
-4. Chunk text with metadata
-5. Store chunks to MongoDB
-6. Update job status to completed
-7. Send webhook notification (if configured)
+**Task Lifecycle (Single Unified Task):**
+
+**Unified Ingestion Task (ingest_queue):**
+1. Receive `ingest_task` from `ingest_queue`
+2. Update status: "processing - extracting"
+3. Download document from Object Storage
+4. Extract text (with automatic cleaning by Unstructured)
+5. Update status: "processing - chunking"
+6. Chunk text with metadata
+7. Store chunks to MongoDB
+8. Update status: "processing - embedding"
+9. Run embedding code (inside worker pod) to generate embeddings
+10. Store embeddings to MongoDB
+11. Update status: "processing - indexing"
+12. Run indexing code (inside worker pod) to create vector indexes in MongoDB
+13. Update job status to "completed"
+14. Send webhook notification (if configured)
+
+**Benefits:**
+- Single atomic task eliminates inter-task coordination complexity
+- Simpler deployment (one worker type instead of three)
+- All code runs inside worker pods in Kubernetes (embedding and indexing)
+- Still fully asynchronous (API returns 202 immediately)
+- Easier to maintain and monitor
 
 ### Error Handling Strategy
 
@@ -727,19 +820,27 @@ class JobStatusResponse(BaseModel):
 
 **Celery Task Metrics:**
 - `celery_tasks_total{task, state}` - Total tasks by state (SUCCESS, FAILURE, RETRY)
+  - task: ingest_task (single unified task)
 - `celery_task_duration_seconds{task}` - Task execution time
 - `celery_queue_length{queue}` - Current queue depth
-- `celery_workers_active{queue}` - Active workers per queue
+  - queue: ingest_queue (single queue)
+- `celery_workers_active` - Active workers
 
 **Pipeline Metrics:**
 - `pipeline_documents_processed_total{stage}` - Documents processed per stage
+  - stage: extraction, chunking, embedding, indexing
 - `pipeline_processing_duration_seconds{stage}` - Stage processing time
+  - stage: extraction, chunking, embedding, indexing
 - `pipeline_errors_total{stage, error_type}` - Errors by stage and type
 - `pipeline_jobs_total{status}` - Total jobs by status
+  - status: queued, processing, completed, failed
+- `pipeline_embeddings_generated_total` - Total embeddings generated
+- `pipeline_vectors_indexed_total` - Total vectors indexed to vector database
 
 **System Metrics:**
 - `redis_memory_usage_bytes` - Redis memory consumption
 - `storage_operations_total{operation, cloud}` - Cloud storage operations
+- `mongodb_operations_total{operation}` - MongoDB operations (read, write, update, vector index, vector search)
 
 ### Dashboards (Grafana)
 
@@ -833,8 +934,9 @@ This design provides a **multi-cloud, scalable RAG ingestion pipeline** with:
   - **GCP**: GCP Memorystore (Redis), Google Cloud Storage, MongoDB, GKE
   - **Data Isolation**: Separate MongoDB instance within each cloud environment
 - ✅ **Cloud Abstraction**: Unified interface across cloud providers
-- ✅ **Distributed Processing**: Task queue-based asynchronous processing
-- ✅ **Atomic Pipeline**: Extract (with built-in cleaning) → Chunk → Store in single task
+- ✅ **Distributed Processing**: Task queue-based asynchronous processing with single unified task
+- ✅ **Unified Pipeline**: Single worker task handles complete pipeline (extract + chunk + embed + index)
+- ✅ **Code Inside Workers**: All embedding and indexing code runs inside Celery worker pods in Kubernetes
 - ✅ **Interface-Driven Design**: Pluggable extraction libraries and chunking strategies
 - ✅ **Multiple Document Formats**: Support for 20+ file formats
 - ✅ **Flexible Processing**: Configurable via API request (single strategy selection)
@@ -854,9 +956,12 @@ This design provides a **multi-cloud, scalable RAG ingestion pipeline** with:
 
 **Infrastructure:**
 - Kubernetes-based container orchestration
-- Unified worker pool with horizontal auto-scaling (2-10 replicas)
-- Dedicated worker node pools
+- Single unified worker pool with horizontal auto-scaling (2-10 replicas):
+  - Ingestion Workers handle complete pipeline (extract + chunk + embed + index)
+  - All embedding and indexing code runs inside worker pods
+- Dedicated worker node pools for resource isolation
 - Multi-cloud object storage
+- MongoDB serves as both document store and vector database
 
 **Operational Excellence:**
 - REST API for job management (FastAPI + Pydantic)
