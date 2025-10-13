@@ -353,12 +353,15 @@ Implement complete REST API layer for v2/ingestion including POST /v2/ingestion 
 
 **1. Pydantic Models**:
 - [ ] Create `src/rag_ingestion_api/models/api.py`:
-  - `IngestionConfig` model combining extraction and chunking configs
-  - `JobResponse` model (job_id, status, submitted_at, filename)
+  - `ExtractionConfig` model (library: str = "unstructured")
+  - `ChunkingConfig` model (strategy, chunk_size, chunk_overlap)
+  - `EmbeddingConfig` model (metadata: Dict[str, Any] for embedding stage)
+  - `IngestionConfig` model combining extraction, chunking, and embedding configs
+  - `JobResponse` model (job_id, status, submitted_at, filename, knowledge_set_id)
   - `TaskStatusResponse` model (task_id, status, chunks)
   - `ErrorResponse` model (error_code, message, details)
   - All models have `extra = "forbid"` in Config
-  - Note: No `CleaningConfig` - cleaning is automatic in extraction
+  - Note: Metadata is part of embedding config, validated against Knowledge Set schema
 
 **2. Configuration**:
 - [ ] Update existing Settings class with:
@@ -373,22 +376,26 @@ Implement complete REST API layer for v2/ingestion including POST /v2/ingestion 
   - POST `/v2/ingestion` endpoint
   - Accepts `multipart/form-data` with fields:
     - `file`: UploadFile (required)
+    - `knowledge_set_id`: UUID string (required) - references existing Knowledge Set entity
     - `config`: JSON string (optional, uses defaults if not provided)
-    - `metadata`: JSON object (optional)
+      - Contains `extraction`, `chunking`, and `embedding` sections
+      - `embedding.metadata`: JSON object validated against Knowledge Set schema
     - `callback_url`: string (optional)
   - Validates `config` with `IngestionConfig` Pydantic model (no cleaning config - automatic)
   - File size limit from config (default: 100MB)
   - Format validation from config
   - Workflow:
+    - Validate `knowledge_set_id` exists (call Knowledge Set CRUD API)
+    - Validate `config.embedding.metadata` against Knowledge Set schema **BEFORE** file upload
     - Generate unique `job_id` (UUID4)
     - Upload file to Object Storage (Azure Blob or GCS) permanently
     - Create job in Redis with status "queued" using `JobStatusManager`
     - Dispatch `ingest_document_task` to Celery (unified task for complete pipeline)
-    - Return 202 Accepted with `JobResponse` (job_id, status, submitted_at, filename)
+    - Return 202 Accepted with `JobResponse` (job_id, status, submitted_at, filename, knowledge_set_id)
   - Error responses:
-    - 400: Invalid config, missing file, unsupported format
+    - 400: Invalid config, missing file, unsupported format, missing knowledge_set_id, invalid knowledge_set_id, metadata validation failed (schema mismatch)
     - 413: File too large
-    - 500: Object Storage failure, queue failure
+    - 500: Object Storage failure, queue failure, Knowledge Set service unavailable
 
 **4. GET /v2/ingestion/{knowledge_ingestion_task_id} Endpoint**:
 - [ ] Add to `src/rag_ingestion_api/api/v2/ingestion.py`:
@@ -417,6 +424,10 @@ Implement complete REST API layer for v2/ingestion including POST /v2/ingestion 
   - Test: Submit HTML → verify automatic cleaning applied
   - Test: Submit with custom chunk config (single strategy) → verify chunk size respected
   - Test: Submit with callback_url → verify webhook called
+  - Test: Submit with valid metadata (config.embedding.metadata) → verify metadata validation passes
+  - Test: Submit with invalid metadata (schema mismatch) → verify 400 error with metadata validation details
+  - Test: Submit without knowledge_set_id → verify 400 error (missing required field)
+  - Test: Submit with non-existent knowledge_set_id → verify 400 error (invalid knowledge_set_id)
   - Test: Submit invalid format → verify 400 error
   - Test: Submit oversized file → verify 413 error
   - Test: Task status query returns correct status and chunks

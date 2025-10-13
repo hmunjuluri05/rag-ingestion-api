@@ -114,9 +114,10 @@ graph TB
   - **Object Storage**: Azure Blob Storage (Azure) / Google Cloud Storage (GCP) - original documents stored permanently
   - **MongoDB**: Separate MongoDB instance within each cloud for chunks with metadata
 - **Processing Flow**:
-  1. API receives file upload with `knowledge_set_id`, uploads document to Object Storage, and dispatches `ingest_task`
-  2. Worker downloads document, extracts+cleans text with Unstructured library, chunks it, stores chunks to MongoDB under the specified Knowledge Set
-  3. Worker updates job status to completed
+  1. API receives file upload with `knowledge_set_id` and validates metadata against Knowledge Set schema
+  2. API uploads document to Object Storage and dispatches `ingest_task`
+  3. Worker downloads document, extracts+cleans text with Unstructured library, chunks it, stores chunks to MongoDB under the specified Knowledge Set
+  4. Worker updates job status to completed
 - **Multi-Cloud**: Identical architecture deployed on Azure (AKS + Redis + Blob + MongoDB) and GCP (GKE + Memorystore + GCS + MongoDB)
 
 **Key Design Decisions:**
@@ -138,6 +139,7 @@ sequenceDiagram
     participant MongoDB as MongoDB
 
     Client->>API: POST /v2/ingestion (multipart file upload)
+    API->>API: Validate metadata against Knowledge Set schema
     API->>BlobStorage: Upload document file permanently
     API->>Redis: Queue ingest_task(job_id, file_path, config)
     API->>Redis: Set job status: queued
@@ -163,9 +165,11 @@ sequenceDiagram
     Note over MongoDB: Chunks stored with metadata<br/>for fast RAG retrieval
 ```
 
-End-to-end flow of a document ingestion request showing interactions between client, FastAPI, unified Celery worker, cloud storage (Blob/GCS), MongoDB, and Redis. Demonstrates job creation, file upload, atomic processing (extract → chunk → store in single task), status updates, and optional webhook callbacks.
+End-to-end flow of a document ingestion request showing interactions between client, FastAPI, unified Celery worker, cloud storage (Blob/GCS), MongoDB, and Redis. Demonstrates metadata validation, job creation, file upload, atomic processing (extract → chunk → store in single task), status updates, and optional webhook callbacks.
 
-**Note:** The worker performs extraction (with automatic cleaning by Unstructured library) and chunking as a single atomic operation, ensuring either the entire job succeeds or fails together.
+**Note:**
+- **Metadata Validation**: The API validates `config.embedding.metadata` against the schema defined at the Knowledge Set level **before** uploading the file or dispatching the task. If validation fails, the request is rejected with a 400 error.
+- **Atomic Processing**: The worker performs extraction (with automatic cleaning by Unstructured library) and chunking as a single atomic operation, ensuring either the entire job succeeds or fails together.
 
 ---
 
@@ -211,8 +215,7 @@ End-to-end flow of a document ingestion request showing interactions between cli
 |-----------|------|----------|-------------|
 | `file` | File (UploadFile) | **Yes** | Document file to process (PDF, DOCX, HTML, etc.) |
 | `knowledge_set_id` | String (UUID) | **Yes** | ID of the existing Knowledge Set to which this document belongs |
-| `config` | JSON string | No | Processing configuration (chunking strategy) |
-| `metadata` | JSON string | No | Custom document metadata (key-value pairs) |
+| `config` | JSON string | No | Processing configuration (chunking, embedding with metadata) |
 | `callback_url` | String (URL) | No | Webhook URL for job completion notification |
 
 **Request Example (cURL):**
@@ -227,8 +230,7 @@ curl -X POST "https://api.example.com/v2/ingestion" \
 curl -X POST "https://api.example.com/v2/ingestion" \
   -F "file=@document.pdf" \
   -F "knowledge_set_id=550e8400-e29b-41d4-a716-446655440000" \
-  -F 'config={"chunking":{"strategy":"recursive","chunk_size":512,"chunk_overlap":50}}' \
-  -F 'metadata={"title":"Q4 Financial Report","author":"John Doe","department":"Finance"}' \
+  -F 'config={"chunking":{"strategy":"recursive","chunk_size":512,"chunk_overlap":50},"embedding":{"metadata":{"title":"Q4 Financial Report","author":"John Doe","department":"Finance"}}}' \
   -F "callback_url=https://example.com/webhook/job-completed"
 ```
 
@@ -236,7 +238,8 @@ curl -X POST "https://api.example.com/v2/ingestion" \
 - The `-F` flag tells curl to send `multipart/form-data` (not JSON)
 - The `@` symbol before filename (`file=@document.pdf`) tells curl to read and upload the **binary file contents**
 - The `knowledge_set_id` must reference an existing Knowledge Set (managed via separate CRUD APIs)
-- The `config` and `metadata` fields are **JSON strings** (not JSON objects) within the multipart form
+- **Metadata validation**: The `metadata` inside `config.embedding` must conform to the schema defined at the Knowledge Set level. The API validates this schema **before** starting file ingestion.
+- The `config` field is a **JSON string** (not JSON object) within the multipart form
 - Without `@`, curl sends the literal string; with `@`, curl sends the actual file bytes
 
 **Python Example:**
@@ -252,12 +255,14 @@ with open("document.pdf", "rb") as f:
     data = {
         'knowledge_set_id': '550e8400-e29b-41d4-a716-446655440000',
         'config': json.dumps({
-            "chunking": {"strategy": "recursive", "chunk_size": 512, "chunk_overlap": 50}
-        }),
-        'metadata': json.dumps({
-            "title": "Q4 Financial Report",
-            "author": "John Doe",
-            "department": "Finance"
+            "chunking": {"strategy": "recursive", "chunk_size": 512, "chunk_overlap": 50},
+            "embedding": {
+                "metadata": {
+                    "title": "Q4 Financial Report",
+                    "author": "John Doe",
+                    "department": "Finance"
+                }
+            }
         }),
         'callback_url': 'https://example.com/webhook/job-completed'
     }
@@ -269,17 +274,23 @@ with open("document.pdf", "rb") as f:
 **Default Configuration** (when `config` not provided):
 ```json
 {
+  "extraction": {
+    "library": "unstructured"
+  },
   "chunking": {
     "strategy": "recursive",
     "chunk_size": 512,
     "chunk_overlap": 50
+  },
+  "embedding": {
+    "metadata": {}
   }
 }
 ```
 
 **Note:**
-- Document extraction uses the Unstructured library (only supported option) which automatically handles text extraction and cleaning
-- No extraction configuration needed - extraction is performed automatically with built-in cleaning and normalization
+- **Extraction**: Uses Unstructured library (only supported option) which automatically handles text extraction and cleaning - no additional configuration needed
+- **Metadata**: Must be provided inside `config.embedding.metadata` and conform to the schema defined at the Knowledge Set level. Validated before ingestion starts.
 
 **Response:**
 ```json
@@ -287,9 +298,22 @@ with open("document.pdf", "rb") as f:
   "job_id": "job_abc123",
   "status": "queued",
   "submitted_at": "2025-10-05T10:30:00Z",
-  "filename": "document.pdf"
+  "filename": "document.pdf",
+  "knowledge_set_id": "550e8400-e29b-41d4-a716-446655440000"
 }
 ```
+
+**Error Responses:**
+- **400 Bad Request**: Invalid configuration, missing required fields, unsupported file format, or **metadata schema validation failure**
+  ```json
+  {
+    "error": "Metadata validation failed",
+    "details": "Field 'author' is required but not provided. Field 'priority' must be one of: low, medium, high"
+  }
+  ```
+- **404 Not Found**: Knowledge Set ID does not exist
+- **413 Payload Too Large**: File exceeds maximum size limit (100MB)
+- **500 Internal Server Error**: Object Storage failure, queue failure
 
 #### 2. Get Job Status
 
@@ -413,6 +437,12 @@ class IChunker(ABC):
 
 **Models:**
 ```python
+class ExtractionConfig(BaseModel):
+    library: str = Field(default="unstructured")
+
+    class Config:
+        extra = "forbid"
+
 class ChunkingConfig(BaseModel):
     strategy: str = Field(default="recursive")
     chunk_size: int = Field(default=512, ge=1, le=8192)
@@ -421,9 +451,16 @@ class ChunkingConfig(BaseModel):
     class Config:
         extra = "forbid"
 
+class EmbeddingConfig(BaseModel):
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+    class Config:
+        extra = "forbid"
+
 class IngestionConfig(BaseModel):
+    extraction: ExtractionConfig = Field(default_factory=ExtractionConfig)
     chunking: ChunkingConfig = Field(default_factory=ChunkingConfig)
-    metadata: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     callback_url: Optional[str] = Field(None, max_length=2048)
 
     class Config:
