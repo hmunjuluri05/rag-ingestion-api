@@ -74,76 +74,50 @@ The RAG Ingestion API is a scalable, multi-cloud document processing pipeline th
 
 ```mermaid
 graph TB
-    Client["Client Application  "]
+    Client["Client Application"]
 
-    subgraph Azure["  AZURE CLOUD  "]
-        subgraph AKS["  Azure Kubernetes Service - AKS  "]
-            API_A["  FastAPI API Pods  "]
-            Workers_A["  Ingestion Workers - Celery  <br/>  Replicas: 2-10  "]
+    subgraph MultiCloud["MULTI-CLOUD DEPLOYMENT  (Azure + GCP)"]
+        subgraph K8s["Kubernetes  (AKS on Azure, GKE on GCP)"]
+            API["KBS API Pods<br/>(deployed on both clouds)"]
+            Workers["Ingestion Workers - Celery<br/>Replicas: 2-10<br/>(deployed on both clouds)"]
         end
-        Redis_A["  Azure Cache for Redis  <br/>  Celery Broker and Job Status  "]
-        Blob_A["  Azure Blob Storage  <br/>  Original Documents  "]
+        Redis["Redis<br/>Azure Cache for Redis (Azure)<br/>GCP Memorystore (GCP)<br/>Celery Broker and Job Status"]
+        ObjectStorage["Object Storage<br/>Azure Blob Storage (Azure)<br/>Google Cloud Storage (GCP)<br/>Original Documents"]
+        MongoDB["MongoDB<br/>(separate instance per cloud)<br/>Chunks and Metadata"]
     end
 
-    subgraph GCP["  GOOGLE CLOUD PLATFORM  "]
-        subgraph GKE["  Google Kubernetes Engine - GKE  "]
-            API_G["  FastAPI API Pods  "]
-            Workers_G["  Ingestion Workers - Celery  <br/>  Replicas: 2-10  "]
-        end
-        Redis_G["  GCP Memorystore Redis  <br/>  Celery Broker and Job Status  "]
-        GCS_G["  Google Cloud Storage  <br/>  Original Documents  "]
-    end
-
-    MongoDB["  MongoDB Atlas  <br/>  cloud.mongodb.com  <br/>  Chunks and Metadata  "]
-
-    Client -->|POST /v1/ingestion| API_A
-    Client -->|POST /v1/ingestion| API_G
-
-    API_A -->|Dispatch ingest_task| Redis_A
-    Redis_A -->|Consume| Workers_A
-
-    API_A -->|Upload document| Blob_A
-    Workers_A -->|Download document| Blob_A
-    Workers_A -->|Store chunks| MongoDB
-
-    API_G -->|Dispatch ingest_task| Redis_G
-    Redis_G -->|Consume| Workers_G
-
-    API_G -->|Upload document| GCS_G
-    Workers_G -->|Download document| GCS_G
-    Workers_G -->|Store chunks| MongoDB
+    Client -->|POST /v2/ingestion<br/>knowledge_set_id + file| API
+    API -->|Dispatch ingest_task| Redis
+    Redis -->|Consume| Workers
+    API -->|Upload document| ObjectStorage
+    Workers -->|Download document| ObjectStorage
+    Workers -->|Store chunks| MongoDB
 
     style Client fill:#1E88E5,stroke:#0D47A1,stroke-width:4px,color:#FFFFFF
-    style Azure fill:#E3F2FD,stroke:#1565C0,stroke-width:3px
-    style AKS fill:#BBDEFB,stroke:#1976D2,stroke-width:2px
-    style API_A fill:#42A5F5,stroke:#1565C0,stroke-width:2px,color:#FFFFFF
-    style Workers_A fill:#1E88E5,stroke:#0D47A1,stroke-width:2px,color:#FFFFFF
-    style Redis_A fill:#EF5350,stroke:#C62828,stroke-width:2px,color:#FFFFFF
-    style Blob_A fill:#29B6F6,stroke:#0277BD,stroke-width:2px,color:#FFFFFF
-    style GCP fill:#E8F5E9,stroke:#2E7D32,stroke-width:3px
-    style GKE fill:#C8E6C9,stroke:#388E3C,stroke-width:2px
-    style API_G fill:#66BB6A,stroke:#2E7D32,stroke-width:2px,color:#FFFFFF
-    style Workers_G fill:#43A047,stroke:#1B5E20,stroke-width:2px,color:#FFFFFF
-    style Redis_G fill:#EF5350,stroke:#C62828,stroke-width:2px,color:#FFFFFF
-    style GCS_G fill:#9CCC65,stroke:#558B2F,stroke-width:2px,color:#FFFFFF
-    style MongoDB fill:#4DB33D,stroke:#13AA52,stroke-width:3px,color:#FFFFFF
+    style MultiCloud fill:#E8F5E9,stroke:#2E7D32,stroke-width:4px
+    style K8s fill:#C8E6C9,stroke:#388E3C,stroke-width:2px
+    style API fill:#42A5F5,stroke:#1565C0,stroke-width:2px,color:#FFFFFF
+    style Workers fill:#1E88E5,stroke:#0D47A1,stroke-width:2px,color:#FFFFFF
+    style Redis fill:#EF5350,stroke:#C62828,stroke-width:2px,color:#FFFFFF
+    style ObjectStorage fill:#29B6F6,stroke:#0277BD,stroke-width:2px,color:#FFFFFF
+    style MongoDB fill:#4DB33D,stroke:#13AA52,stroke-width:2px,color:#FFFFFF
 ```
 
 **Complete multi-cloud deployment architecture** showing:
-- **Client Layer**: Applications submit jobs via REST API
-- **API Layer**: FastAPI pods (1-2 replicas) handle both search and ingestion endpoints
+- **Client Layer**: Applications submit jobs via REST API with `knowledge_set_id` (references existing Knowledge Set entity)
+- **API Layer**: FastAPI pods (1-2 replicas) deployed identically on both Azure and GCP
 - **Task Queue**: Redis-backed Celery with single queue (`ingest_queue`)
   - **Azure**: Azure Cache for Redis
   - **GCP**: GCP Memorystore (Redis)
-- **Worker Pool**: Unified ingestion workers (2-10 pods) handle complete pipeline
+- **Worker Pool**: Unified ingestion workers (2-10 pods) deployed identically on both clouds, handle complete pipeline
 - **Hybrid Storage**:
-  - **Object Storage** (Azure Blob / GCS): Original documents stored permanently
-  - **MongoDB Atlas** (cloud.mongodb.com): External cloud database for chunks with metadata, searchable and queryable
+  - **Object Storage**: Azure Blob Storage (Azure) / Google Cloud Storage (GCP) - original documents stored permanently
+  - **MongoDB**: Separate MongoDB instance within each cloud for chunks with metadata
 - **Processing Flow**:
-  1. API uploads document to Object Storage and dispatches `ingest_task`
-  2. Worker downloads document, extracts+cleans text, chunks it, stores to MongoDB Atlas
+  1. API receives file upload with `knowledge_set_id`, uploads document to Object Storage, and dispatches `ingest_task`
+  2. Worker downloads document, extracts+cleans text with Unstructured library, chunks it, stores chunks to MongoDB under the specified Knowledge Set
   3. Worker updates job status to completed
-- **Multi-Cloud**: Identical architecture deployed on Azure (AKS + Redis + Blob) and GCP (GKE + Memorystore + GCS), both connecting to shared MongoDB Atlas (cloud.mongodb.com)
+- **Multi-Cloud**: Identical architecture deployed on Azure (AKS + Redis + Blob + MongoDB) and GCP (GKE + Memorystore + GCS + MongoDB)
 
 **Key Design Decisions:**
 - **Documents in Object Storage**: 10x cheaper than MongoDB, built for large files, permanent archival
@@ -161,9 +135,9 @@ sequenceDiagram
     participant Redis as Redis (Celery Broker)
     participant Worker as Ingestion Worker
     participant BlobStorage as Object Storage (Blob/GCS)
-    participant MongoDB as MongoDB Atlas (cloud.mongodb.com)
+    participant MongoDB as MongoDB
 
-    Client->>API: POST /v1/ingestion (multipart file upload)
+    Client->>API: POST /v2/ingestion (multipart file upload)
     API->>BlobStorage: Upload document file permanently
     API->>Redis: Queue ingest_task(job_id, file_path, config)
     API->>Redis: Set job status: queued
@@ -181,7 +155,7 @@ sequenceDiagram
         Worker->>Client: POST callback_url {job_id, status: completed}
     end
 
-    Client->>API: GET /v1/ingestion/{knowledge_ingestion_task_id}
+    Client->>API: GET /v2/ingestion/{knowledge_ingestion_task_id}
     API->>Redis: Read job status
     API-->>Client: {task_id, status, chunks}
 
@@ -189,7 +163,7 @@ sequenceDiagram
     Note over MongoDB: Chunks stored with metadata<br/>for fast RAG retrieval
 ```
 
-End-to-end flow of a document ingestion request showing interactions between client, FastAPI, unified Celery worker, cloud storage (Blob/GCS), MongoDB Atlas (cloud.mongodb.com), and Redis. Demonstrates job creation, file upload, atomic processing (extract → chunk → store in single task), status updates, and optional webhook callbacks.
+End-to-end flow of a document ingestion request showing interactions between client, FastAPI, unified Celery worker, cloud storage (Blob/GCS), MongoDB, and Redis. Demonstrates job creation, file upload, atomic processing (extract → chunk → store in single task), status updates, and optional webhook callbacks.
 
 **Note:** The worker performs extraction (with automatic cleaning by Unstructured library) and chunking as a single atomic operation, ensuring either the entire job succeeds or fails together.
 
@@ -217,7 +191,7 @@ End-to-end flow of a document ingestion request showing interactions between cli
 - Object Storage: Azure Blob Storage (AKS) / Google Cloud Storage (GKE)
 - Task Broker/Backend: Azure Cache for Redis (AKS) / GCP Memorystore Redis (GKE)
 - Job State: Redis for task status and progress tracking
-- Chunk Storage: MongoDB Atlas (cloud.mongodb.com) - external cloud database for queryable chunks with metadata
+- Chunk Storage: MongoDB - separate instance within each cloud for queryable chunks with metadata
 
 ---
 
@@ -227,7 +201,7 @@ End-to-end flow of a document ingestion request showing interactions between cli
 
 #### 1. Submit Ingestion Job
 
-**POST** `/v1/ingestion`
+**POST** `/v2/ingestion`
 
 **Content-Type:** `multipart/form-data`
 
@@ -236,41 +210,65 @@ End-to-end flow of a document ingestion request showing interactions between cli
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `file` | File (UploadFile) | **Yes** | Document file to process (PDF, DOCX, HTML, etc.) |
-| `config` | JSON string | No | Processing configuration (extraction library, chunking strategy) |
+| `knowledge_set_id` | String (UUID) | **Yes** | ID of the existing Knowledge Set to which this document belongs |
+| `config` | JSON string | No | Processing configuration (chunking strategy) |
 | `metadata` | JSON string | No | Custom document metadata (key-value pairs) |
 | `callback_url` | String (URL) | No | Webhook URL for job completion notification |
 
-**Request Example:**
-```json
-{
-  "file": "document.pdf",
-  "config": {
-    "extraction": {
-      "library": "unstructured"
-    },
-    "chunking": {
-      "strategy": "recursive",
-      "chunk_size": 512,
-      "chunk_overlap": 50
+**Request Example (cURL):**
+
+```bash
+# Basic upload with default config
+curl -X POST "https://api.example.com/v2/ingestion" \
+  -F "file=@document.pdf" \
+  -F "knowledge_set_id=550e8400-e29b-41d4-a716-446655440000"
+
+# Upload with custom configuration
+curl -X POST "https://api.example.com/v2/ingestion" \
+  -F "file=@document.pdf" \
+  -F "knowledge_set_id=550e8400-e29b-41d4-a716-446655440000" \
+  -F 'config={"chunking":{"strategy":"recursive","chunk_size":512,"chunk_overlap":50}}' \
+  -F 'metadata={"title":"Q4 Financial Report","author":"John Doe","department":"Finance"}' \
+  -F "callback_url=https://example.com/webhook/job-completed"
+```
+
+**Important Notes:**
+- The `-F` flag tells curl to send `multipart/form-data` (not JSON)
+- The `@` symbol before filename (`file=@document.pdf`) tells curl to read and upload the **binary file contents**
+- The `knowledge_set_id` must reference an existing Knowledge Set (managed via separate CRUD APIs)
+- The `config` and `metadata` fields are **JSON strings** (not JSON objects) within the multipart form
+- Without `@`, curl sends the literal string; with `@`, curl sends the actual file bytes
+
+**Python Example:**
+```python
+import requests
+import json
+
+url = "https://api.example.com/v2/ingestion"
+
+with open("document.pdf", "rb") as f:
+    files = {'file': ('document.pdf', f, 'application/pdf')}
+
+    data = {
+        'knowledge_set_id': '550e8400-e29b-41d4-a716-446655440000',
+        'config': json.dumps({
+            "chunking": {"strategy": "recursive", "chunk_size": 512, "chunk_overlap": 50}
+        }),
+        'metadata': json.dumps({
+            "title": "Q4 Financial Report",
+            "author": "John Doe",
+            "department": "Finance"
+        }),
+        'callback_url': 'https://example.com/webhook/job-completed'
     }
-  },
-  "metadata": {
-    "title": "Q4 Financial Report",
-    "author": "John Doe",
-    "department": "Finance",
-    "document_type": "report",
-    "confidentiality": "internal"
-  },
-  "callback_url": "https://example.com/webhook/job-completed"
-}
+
+    response = requests.post(url, files=files, data=data)
+    print(response.json())
 ```
 
 **Default Configuration** (when `config` not provided):
 ```json
 {
-  "extraction": {
-    "library": "unstructured"
-  },
   "chunking": {
     "strategy": "recursive",
     "chunk_size": 512,
@@ -279,11 +277,9 @@ End-to-end flow of a document ingestion request showing interactions between cli
 }
 ```
 
-**Note:** Cleaning is automatic and built into the extraction library (Unstructured), so no separate cleaning configuration is needed.
-
-**Extraction Library Options:**
-- `"unstructured"` - Default, open-source multi-format document parser
-- `"azure_di"` - Azure Document Intelligence (future support, cloud-based OCR and advanced extraction)
+**Note:**
+- Document extraction uses the Unstructured library (only supported option) which automatically handles text extraction and cleaning
+- No extraction configuration needed - extraction is performed automatically with built-in cleaning and normalization
 
 **Response:**
 ```json
@@ -297,7 +293,7 @@ End-to-end flow of a document ingestion request showing interactions between cli
 
 #### 2. Get Job Status
 
-**GET** `/v1/ingestion/{knowledge_ingestion_task_id}`
+**GET** `/v2/ingestion/{knowledge_ingestion_task_id}`
 
 **Response:**
 ```json
@@ -353,20 +349,12 @@ class IExtractor(ABC):
 **Supported Formats:**
 - PDF, DOCX, DOC, PPTX, HTML, Markdown, TXT, and 20+ more formats
 
-**Extraction Libraries** (configurable via API):
-- **`unstructured`** (default): Open-source multi-format document parser
+**Extraction Library:**
+- **`unstructured`** (only supported option): Open-source multi-format document parser
   - Supports 20+ document formats (PDF, DOCX, HTML, TXT, Markdown, etc.)
   - Local processing, no external API calls
   - Handles text extraction, tables, and document structure
   - **Automatic cleaning and normalization** (see below)
-- **`azure_di`** (future): Azure Document Intelligence
-  - Cloud-based extraction service
-  - Built-in OCR with high accuracy for scanned documents
-  - Advanced table and layout extraction
-  - Handwriting recognition support
-  - Includes automatic text cleanup
-
-**Default Library:** `"unstructured"`
 
 #### Document Cleaning & Normalization (Built-in)
 
@@ -425,18 +413,6 @@ class IChunker(ABC):
 
 **Models:**
 ```python
-from enum import Enum
-
-class ExtractionLibrary(str, Enum):
-    UNSTRUCTURED = "unstructured"
-    AZURE_DI = "azure_di"  # Future support
-
-class ExtractionConfig(BaseModel):
-    library: ExtractionLibrary = Field(default=ExtractionLibrary.UNSTRUCTURED)
-
-    class Config:
-        extra = "forbid"
-
 class ChunkingConfig(BaseModel):
     strategy: str = Field(default="recursive")
     chunk_size: int = Field(default=512, ge=1, le=8192)
@@ -446,7 +422,6 @@ class ChunkingConfig(BaseModel):
         extra = "forbid"
 
 class IngestionConfig(BaseModel):
-    extraction: ExtractionConfig = Field(default_factory=ExtractionConfig)
     chunking: ChunkingConfig = Field(default_factory=ChunkingConfig)
     metadata: Optional[Dict[str, Any]] = Field(default_factory=dict)
     callback_url: Optional[str] = Field(None, max_length=2048)
@@ -459,6 +434,7 @@ class JobResponse(BaseModel):
     status: str
     submitted_at: str
     filename: str
+    knowledge_set_id: str
 
 class JobStatusResponse(BaseModel):
     job_id: str
@@ -499,9 +475,9 @@ class JobStatusResponse(BaseModel):
 | **Kubernetes** | Azure Kubernetes Service (AKS) | Google Kubernetes Engine (GKE) |
 | **Redis** | Azure Cache for Redis | GCP Memorystore (Redis) |
 | **Object Storage** | Azure Blob Storage | Google Cloud Storage (GCS) |
-| **Database** | MongoDB Atlas (cloud.mongodb.com) | MongoDB Atlas (cloud.mongodb.com) |
+| **Database** | MongoDB | MongoDB |
 
-**Note:** MongoDB Atlas is an external cloud service (cloud.mongodb.com) shared by both Azure and GCP deployments.
+**Note:** Each cloud environment has its own separate MongoDB instance for data isolation.
 
 ---
 
@@ -523,9 +499,8 @@ class JobStatusResponse(BaseModel):
 
 **Extraction Configuration:**
 - Supported file formats: PDF, DOCX, HTML, TXT, Markdown, and 20+ formats
-- Extraction library: `unstructured` (default), `azure_di` (future)
+- Extraction library: `unstructured` (only option) - no configuration needed
 - **Automatic cleaning/normalization** included in extraction (no separate config needed)
-- Default: `library: "unstructured"`
 
 **Chunking Configuration:**
 - Chunking strategy (single selection): `recursive`, `semantic`, `sentence`, `paragraph`
@@ -536,24 +511,16 @@ class JobStatusResponse(BaseModel):
 ### Configuration Profiles
 
 **Balanced Profile:**
-- Extraction library: `unstructured` (includes automatic cleaning)
 - Chunking strategy: `recursive`, chunk_size: 512, overlap: 50
 - Optimal for general digital documents
 
 **High Quality Profile:**
-- Extraction library: `unstructured` (includes automatic cleaning)
 - Chunking strategy: `semantic`, chunk_size: 256, overlap: 50
 - Semantic chunking for precision
 
 **Large Context Profile:**
-- Extraction library: `unstructured` (includes automatic cleaning)
 - Chunking strategy: `recursive`, chunk_size: 2048, overlap: 100
 - Larger chunks for long-form content
-
-**Future: Azure DI Profile:**
-- Extraction library: `azure_di` (includes automatic cleaning)
-- Chunking strategy: `semantic`, chunk_size: 512, overlap: 50
-- Cloud-based extraction with advanced OCR and handwriting support
 
 ---
 
@@ -631,7 +598,7 @@ class JobStatusResponse(BaseModel):
 **Purpose:** Create pipeline components based on configuration
 
 **Components:**
-- **Extractor Factory**: Creates appropriate extractors based on library selection (unstructured, azure_di)
+- **Extractor Factory**: Creates Unstructured extractor (only supported option)
 - **Chunker Factory**: Selects chunking implementation based on single strategy selection (recursive, semantic, sentence, paragraph)
 - **Storage Factory**: Instantiates cloud-specific storage provider (Azure Blob / GCS)
 
@@ -825,9 +792,9 @@ This design provides a **multi-cloud, scalable RAG ingestion pipeline** with:
 ### Architecture Highlights
 
 - ✅ **Multi-Cloud Support**: Deployable on Azure (AKS) and GCP (GKE)
-  - **Azure**: Azure Cache for Redis, Azure Blob Storage, AKS
-  - **GCP**: GCP Memorystore (Redis), Google Cloud Storage, GKE
-  - **External Database**: MongoDB Atlas (cloud.mongodb.com) shared by both clouds
+  - **Azure**: Azure Cache for Redis, Azure Blob Storage, MongoDB, AKS
+  - **GCP**: GCP Memorystore (Redis), Google Cloud Storage, MongoDB, GKE
+  - **Data Isolation**: Separate MongoDB instance within each cloud environment
 - ✅ **Cloud Abstraction**: Unified interface across cloud providers
 - ✅ **Distributed Processing**: Task queue-based asynchronous processing
 - ✅ **Atomic Pipeline**: Extract (with built-in cleaning) → Chunk → Store in single task
@@ -842,9 +809,9 @@ This design provides a **multi-cloud, scalable RAG ingestion pipeline** with:
 ### Key Capabilities
 
 **Document Processing:**
-- **Extraction Library**: Unstructured (default), Azure DI (future support) - selectable via API
+- **Extraction Library**: Unstructured (only supported option)
   - Multi-format support (PDF, DOCX, HTML, Markdown, and 20+ formats)
-  - Local processing with Unstructured or cloud-based with Azure DI
+  - Local processing with no external API calls
   - **Automatic cleaning/normalization** built into extraction (whitespace, character cleanup, layout flattening, dehyphenation, etc.)
 - **Chunking Strategy**: Single strategy selection - recursive, semantic, sentence, or paragraph (configurable via API)
 

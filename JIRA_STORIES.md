@@ -1,9 +1,9 @@
-# RAG Ingestion API - Enhanced v1/ingestion Implementation Stories
+# RAG Ingestion API - v2/ingestion Implementation Stories
 
-**Project**: RAG Ingestion API v1 Enhancement
-**Epic**: Document Processing Pipeline with Enhanced v1/ingestion Endpoint
+**Project**: RAG Ingestion API v2 Implementation
+**Epic**: Document Processing Pipeline with New v2/ingestion Endpoint
 **Sprint Duration**: 2 weeks
-**Context**: Enhancing existing v1/ingestion API on AKS and GKE with hybrid storage and unified worker architecture
+**Context**: Implementing new v2/ingestion API on AKS and GKE with hybrid storage and unified worker architecture (v1 remains unchanged for existing users)
 
 **Architecture**: One story per layer, with all configuration and dependencies bundled
 
@@ -332,7 +332,7 @@ Implement complete task processing layer including Celery configuration for sing
 - [ ] Test coverage >80%
 
 **11. Documentation**:
-- [ ] Running workers locally for v1/ingestion
+- [ ] Running workers locally for v2/ingestion
 - [ ] Task architecture and atomic processing
 - [ ] Error handling and retry logic
 
@@ -347,7 +347,7 @@ Implement complete task processing layer including Celery configuration for sing
 **Story Points**: 12
 
 **Description**:
-Implement complete REST API layer for v1/ingestion including POST /v1/ingestion for job submission and GET /v1/ingestion/{knowledge_ingestion_task_id} for status queries. Includes request/response validation, file upload handling, and integration with storage and task layers.
+Implement complete REST API layer for v2/ingestion including POST /v2/ingestion for job submission and GET /v2/ingestion/{knowledge_ingestion_task_id} for status queries. Includes request/response validation, file upload handling, and integration with storage and task layers.
 
 **Acceptance Criteria**:
 
@@ -368,9 +368,9 @@ Implement complete REST API layer for v1/ingestion including POST /v1/ingestion 
 - [ ] Update `.env.example` with API settings
 - [ ] Configuration validates on application startup
 
-**3. POST /v1/ingestion Endpoint**:
-- [ ] Create `src/rag_ingestion_api/api/v1/ingestion.py`:
-  - POST `/v1/ingestion` endpoint
+**3. POST /v2/ingestion Endpoint**:
+- [ ] Create `src/rag_ingestion_api/api/v2/ingestion.py`:
+  - POST `/v2/ingestion` endpoint
   - Accepts `multipart/form-data` with fields:
     - `file`: UploadFile (required)
     - `config`: JSON string (optional, uses defaults if not provided)
@@ -390,9 +390,9 @@ Implement complete REST API layer for v1/ingestion including POST /v1/ingestion 
     - 413: File too large
     - 500: Object Storage failure, queue failure
 
-**4. GET /v1/ingestion/{knowledge_ingestion_task_id} Endpoint**:
-- [ ] Add to `src/rag_ingestion_api/api/v1/ingestion.py`:
-  - GET `/v1/ingestion/{knowledge_ingestion_task_id}` endpoint
+**4. GET /v2/ingestion/{knowledge_ingestion_task_id} Endpoint**:
+- [ ] Add to `src/rag_ingestion_api/api/v2/ingestion.py`:
+  - GET `/v2/ingestion/{knowledge_ingestion_task_id}` endpoint
   - Queries Redis/MongoDB for task status and chunks
   - Returns `TaskStatusResponse` with:
     - task_id: str
@@ -411,7 +411,7 @@ Implement complete REST API layer for v1/ingestion including POST /v1/ingestion 
 - [ ] Test coverage >80%
 
 **6. End-to-End Integration Tests**:
-- [ ] Create `tests/integration/test_v1_ingestion_e2e.py`:
+- [ ] Create `tests/integration/test_v2_ingestion_e2e.py`:
   - Test: Submit PDF → verify file in Object Storage → verify chunks in MongoDB with correct metadata
   - Test: Submit DOCX → verify atomic processing (extract + chunk + store)
   - Test: Submit HTML → verify automatic cleaning applied
@@ -447,12 +447,12 @@ Implement complete REST API layer for v1/ingestion including POST /v1/ingestion 
 **Story Points**: 13
 
 **Description**:
-Complete deployment layer including comprehensive API documentation, Kubernetes deployment manifests for AKS/GKE with hybrid storage support, and Prometheus metrics with Grafana dashboards for monitoring the v1/ingestion pipeline.
+Complete deployment layer including comprehensive API documentation, Kubernetes deployment manifests for AKS/GKE with hybrid storage support, and Prometheus metrics with Grafana dashboards for monitoring the v2/ingestion pipeline.
 
 **Acceptance Criteria**:
 
 **1. API Documentation**:
-- [ ] Update or create `docs/API_V1_INGESTION.md`:
+- [ ] Create `docs/API_V2_INGESTION.md`:
   - Endpoint description and purpose
   - Request format with all parameters explained
   - Configuration options:
@@ -461,23 +461,23 @@ Complete deployment layer including comprehensive API documentation, Kubernetes 
     - Chunk size recommendations by use case
   - Hybrid storage architecture explanation:
     - Documents stored permanently in Object Storage (Blob/GCS)
-    - Chunks stored in MongoDB with indexes
+    - Chunks stored in MongoDB with indexes (separate instance per cloud)
     - Cost savings vs MongoDB-only approach
   - Response format and status codes
   - Error codes with troubleshooting
   - Webhook callback format and payload
 - [ ] Code examples in Python and cURL:
-  - Basic job submission (POST /v1/ingestion)
+  - Basic job submission (POST /v2/ingestion)
   - Custom configuration (single chunking strategy)
   - With metadata and callback
-  - Query task status (GET /v1/ingestion/{knowledge_ingestion_task_id})
+  - Query task status (GET /v2/ingestion/{knowledge_ingestion_task_id})
 - [ ] Task lifecycle diagram (queued → processing → completed)
 - [ ] Configuration best practices (no cleaning config needed, single chunking strategy)
 - [ ] OpenAPI spec updated with descriptions
-- [ ] README.md updated with enhanced v1/ingestion section
+- [ ] README.md updated with new v2/ingestion section (v1 remains unchanged)
 
 **2. Kubernetes Deployments**:
-- [ ] Deploy enhanced v1/ingestion API code (no changes to API pod deployment configuration)
+- [ ] Deploy new v2/ingestion API code (no changes to API pod deployment configuration, v1 endpoints remain unchanged)
 - [ ] Create unified ingestion worker deployment (Celery):
   - Queue: `ingest_queue` (single queue for entire pipeline)
   - Replicas: 2-10 with HPA based on queue length
@@ -505,17 +505,17 @@ Complete deployment layer including comprehensive API documentation, Kubernetes 
 
 **3. Monitoring and Metrics**:
 - [ ] Add metrics to existing `/metrics` endpoint:
-  - `v1_ingest_jobs_total{status}` - counter (submitted, completed, failed, cancelled)
-  - `v1_ingest_job_duration_seconds{stage}` - histogram (extraction, chunking, storage, total)
-  - `v1_ingest_documents_processed_total{format}` - counter (pdf, docx, html, etc.)
-  - `v1_ingest_chunks_created_total` - counter
-  - `v1_ingest_errors_total{stage, error_type}` - counter
-  - `v1_ingest_queue_length` - gauge (single ingest_queue)
-  - `v1_ingest_file_size_bytes` - histogram
-  - `v1_ingest_object_storage_uploads_total{cloud}` - counter (azure, gcp)
-  - `v1_ingest_mongodb_writes_total` - counter (chunk storage)
-  - `v1_ingest_atomic_failures_total` - counter (rollback operations)
-- [ ] Create Grafana dashboard `v1-ingest-pipeline.json`:
+  - `v2_ingest_jobs_total{status}` - counter (submitted, completed, failed, cancelled)
+  - `v2_ingest_job_duration_seconds{stage}` - histogram (extraction, chunking, storage, total)
+  - `v2_ingest_documents_processed_total{format}` - counter (pdf, docx, html, etc.)
+  - `v2_ingest_chunks_created_total` - counter
+  - `v2_ingest_errors_total{stage, error_type}` - counter
+  - `v2_ingest_queue_length` - gauge (single ingest_queue)
+  - `v2_ingest_file_size_bytes` - histogram
+  - `v2_ingest_object_storage_uploads_total{cloud}` - counter (azure, gcp)
+  - `v2_ingest_mongodb_writes_total` - counter (chunk storage)
+  - `v2_ingest_atomic_failures_total` - counter (rollback operations)
+- [ ] Create Grafana dashboard `v2-ingest-pipeline.json`:
   - Job submission rate and status breakdown
   - Pipeline stage duration trends (extraction, chunking, storage)
   - Single queue depth and worker utilization
@@ -588,12 +588,14 @@ Implement Azure Document Intelligence as an alternative extraction library for a
 **Architecture**: Layered approach with one story per layer, testing integrated into each story
 
 **Key Architecture Decisions**:
-- **Simplified API**: Only 2 endpoints (POST /v1/ingestion, GET /v1/ingestion/{knowledge_ingestion_task_id})
+- **New API Version**: v2/ingestion endpoints (v1 remains unchanged for existing users)
+- **Simplified API**: Only 2 endpoints (POST /v2/ingestion, GET /v2/ingestion/{knowledge_ingestion_task_id})
 - **No Job Cancellation**: Removed DELETE endpoint for simpler implementation
 - **Unified Worker Pool**: Single worker type handles complete pipeline (simplified architecture)
 - **Single Queue**: `ingest_queue` for all ingestion tasks (no task chaining complexity)
 - **Atomic Processing**: Extract → Chunk → Store in single task (all-or-nothing)
 - **Hybrid Storage**: Object Storage (Blob/GCS) for documents, MongoDB for chunks (74% cost savings)
+- **Separate MongoDB**: Each cloud environment has its own MongoDB instance for data isolation
 - **No Separate Cleaning**: Automatic in Unstructured library during extraction
 - **Single Chunking Strategy**: Per-job selection (not multiple strategies)
 - **Always-Running Workers**: Min 2 replicas (not scale-to-zero) for fast response
@@ -633,5 +635,6 @@ Implement Azure Document Intelligence as an alternative extraction library for a
 - Azure Document Intelligence removed from MVP - moved to backlog (Story 7)
 - Each story includes all models, configuration, implementation, tests, and documentation for that layer
 - Testing is integrated into each story's Definition of Done (no separate testing story)
-- Focus is on enhancing existing v1/ingestion API (no v2 needed since v1 has no users)
+- Focus is on implementing new v2/ingestion API (v1 remains unchanged for existing users)
 - Hybrid storage provides significant cost savings (74%) vs MongoDB-only approach
+- Separate MongoDB instances per cloud for data isolation
