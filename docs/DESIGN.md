@@ -1,4 +1,4 @@
-# RAG Ingestion API - Complete Design Document
+# RAG Ingestion API - Design Document
 
 ## Table of Contents
 1. [Introduction](#executive-summary)
