@@ -76,24 +76,23 @@ The RAG Ingestion API is a scalable, multi-cloud document processing pipeline th
 graph TB
     Client["Client Application"]
 
-    subgraph MultiCloud["MULTI-CLOUD DEPLOYMENT  (Azure + GCP)"]
-        subgraph K8s["Kubernetes - AKS on Azure, GKE on GCP"]
-            API["KBS API Pods<br/>deployed on both clouds"]
-            Workers["Ingestion Workers - Celery<br/>Queue: ingest_queue, Replicas: 2-10<br/>Embedding and Indexing runs inside"]
+    subgraph MultiCloud["Azure & GCP MULTI-CLOUD"]
+        subgraph K8s["Kubernetes - AKS/GKE"]
+            API["KBS API Pods"]
+            Workers["Celery - Ingestion Workers<br/><br/>Replicas: 2-10<br/> Extract, Chunk, Embedding"]
         end
-        Redis["Redis<br/>Azure Cache for Redis (Azure)<br/>GCP Memorystore (GCP)<br/>Celery Broker and Job Status"]
-        ObjectStorage["Object Storage<br/>Azure Blob Storage (Azure)<br/>Google Cloud Storage (GCP)<br/>Original Documents"]
-        MongoDB["MongoDB<br/>(separate instance per cloud)<br/>Chunks, Embeddings, and Vector Indexes"]
+        Redis["Redis - Celery Broker<br/><br/>Azure Cache for Redis<br/>GCP Memorystore"]
+        ObjectStorage["Object Storage<br/>Azure Blob Storage (Azure)<br/>Google Cloud Storage (GCP)<br/>(Original Documents)"]
+        MongoDB["MongoDB<br/>Chunks, Embeddings"]
     end
 
     Client -->|POST /v2/ingestion<br/>knowledge_set_id + file| API
-    API -->|1. Upload document| ObjectStorage
-    API -->|2. Queue ingest_task| Redis
-    Redis -->|3. Consume| Workers
-    Workers -->|Download document| ObjectStorage
-    Workers -->|Store chunks| MongoDB
-    Workers -->|Generate embeddings<br/>code inside worker| MongoDB
-    Workers -->|Index vectors<br/>code inside worker| MongoDB
+    API -->|#1 Upload document| ObjectStorage
+    API -->|#2 Queue ingest_task| Redis
+    Redis -->|#3 Consume| Workers
+    Workers -->|#4 Download document| ObjectStorage
+    Workers -->|#5 Store chunks| MongoDB
+    Workers -->|#6 Store embeddings| MongoDB
 
     style Client fill:#1E88E5,stroke:#0D47A1,stroke-width:4px,color:#FFFFFF
     style MultiCloud fill:#E8F5E9,stroke:#2E7D32,stroke-width:4px

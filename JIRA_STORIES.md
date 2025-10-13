@@ -212,14 +212,14 @@ Implement complete chunking layer with recursive, semantic, sentence, and paragr
 
 ---
 
-## Story 4: Task Processing Layer - Chained Celery Tasks (Ingest → Embed → Index)
+## Story 4: Task Processing Layer - Unified Celery Task (Complete Pipeline)
 
-**Story Title**: Implement complete task processing layer with Celery configuration and three chained tasks
+**Story Title**: Implement complete task processing layer with Celery configuration and single unified task
 
-**Story Points**: 18
+**Story Points**: 15
 
 **Description**:
-Implement complete task processing layer including Celery configuration for three-queue architecture with chained tasks (ingest → embed → index). Includes job status models, Redis-based job manager, Celery configuration, three separate tasks (ingestion, embedding, indexing), and task chaining support. Each task operates independently and chains to the next task upon completion.
+Implement complete task processing layer including Celery configuration for single-queue architecture with unified task. Includes job status models, Redis-based job manager, Celery configuration, and single unified task that handles complete pipeline (extract → chunk → embed → index). All processing including embedding and indexing code runs inside worker pods in Kubernetes. MongoDB serves as both document store and vector database.
 
 **Acceptance Criteria**:
 
@@ -267,117 +267,96 @@ Implement complete task processing layer including Celery configuration for thre
 
 **5. Celery Configuration**:
 - [ ] Update Celery app configuration with:
-  - Three queues:
-    - `ingest_queue` - ingestion tasks (extract + chunk)
-    - `embedding_queue` - embedding tasks (generate embeddings)
-    - `indexing_queue` - indexing tasks (index to vector DB)
+  - Single queue:
+    - `ingest_queue` - all ingestion tasks (extract + chunk + embed + index)
   - Task routing configuration:
     - `ingest_document_task` → `ingest_queue`
-    - `embedding_task` → `embedding_queue`
-    - `indexing_task` → `indexing_queue`
-  - Default retry policy per queue: 3 retries, exponential backoff (base=4s, max=300s)
-  - Task time limits per task type:
-    - Ingestion: soft=900s, hard=1200s
-    - Embedding: soft=1200s, hard=1800s (longer for ML workload)
-    - Indexing: soft=600s, hard=900s
+  - Default retry policy: 3 retries, exponential backoff (base=4s, max=300s)
+  - Task time limits:
+    - soft=1800s, hard=2400s (covers complete pipeline including embedding)
 - [ ] Base task class for pipeline tasks with:
   - Automatic status updates to Redis (job status tracking with stage info)
   - Error logging with full context
   - Standardized exception handling
-  - Task chaining support (queue next task on success)
+  - Stage-specific progress tracking (extracting, chunking, embedding, indexing)
 - [ ] Worker startup configuration:
-  - Ingestion workers (Celery) listen to `ingest_queue` - replicas: 2-10
-  - Embedding workers (Celery) listen to `embedding_queue` - replicas: 2-10
-  - Indexing workers (Celery) listen to `indexing_queue` - replicas: 2-10
-- [ ] Celery routes configuration file with three queue mappings
+  - Unified Ingestion workers (Celery) listen to `ingest_queue` - replicas: 2-10
+  - Workers run embedding and indexing code inside pods
+  - Higher resource allocation (CPU 2000m, Memory 4Gi) to handle complete pipeline
 
-**6. Task 1 - Ingestion Task (ingest_queue)**:
+**6. Unified Ingestion Task (ingest_queue)**:
 - [ ] Create `src/rag_ingestion_api/tasks/ingest_task.py`:
   - `ingest_document_task(job_id: str, file_path: str, config: dict)`
-  - Routed to `ingest_queue`, consumed by Ingestion Workers
-  - Updates job status to "processing - extracting"
-  - Downloads document from Object Storage (Azure Blob or GCS)
-  - Uses `ExtractorFactory` to get extractor based on config
-  - Extracts text from document (automatic cleaning included by Unstructured)
-  - Updates job status to "processing - chunking"
-  - Uses `ChunkerFactory` to get chunker based on config (single strategy selection)
-  - Splits text into chunks with metadata (position, total_chunks, source document info)
-  - Stores chunks to MongoDB using `MongoDBChunkStore` with indexes
-  - MongoDB indexes created: job_id, metadata fields, created_at
-  - On success: Queue `embedding_task` to `embedding_queue` with chunk IDs
-  - On failure: Update job status to "failed" with error details
-  - Returns: `{job_id, chunk_ids, config}` for next task
+  - Routed to `ingest_queue`, consumed by Unified Ingestion Workers
+  - **Stage 1 - Extraction**:
+    - Updates job status to "processing - extracting"
+    - Downloads document from Object Storage (Azure Blob or GCS)
+    - Uses `ExtractorFactory` to get extractor based on config
+    - Extracts text from document (automatic cleaning included by Unstructured)
+  - **Stage 2 - Chunking**:
+    - Updates job status to "processing - chunking"
+    - Uses `ChunkerFactory` to get chunker based on config (single strategy selection)
+    - Splits text into chunks with metadata (position, total_chunks, source document info)
+    - Stores chunks to MongoDB using `MongoDBChunkStore` with indexes
+    - MongoDB indexes created: job_id, metadata fields, created_at
+  - **Stage 3 - Embedding**:
+    - Updates job status to "processing - embedding"
+    - Runs embedding code inside worker pod (not external service)
+    - Generates embeddings for each chunk
+    - Stores embeddings to MongoDB (update chunk documents with embedding field)
+  - **Stage 4 - Indexing**:
+    - Updates job status to "processing - indexing"
+    - Runs indexing code inside worker pod (not external service)
+    - Creates vector indexes in MongoDB (MongoDB serves as vector database)
+    - Updates job status to "completed"
+  - **Completion**:
+    - Sends webhook notification if `callback_url` provided
+    - Webhook payload includes: job_id, status, stats (chunks_created, embeddings_generated, vectors_indexed, total_time)
+  - On failure at any stage: Update job status to "failed" with error details and failed stage
+  - Returns: `{job_id, status: "completed", stats: {...}}` as final result
 
-**7. Task 2 - Embedding Task (embedding_queue)**:
-- [ ] Create `src/rag_ingestion_api/tasks/embedding_task.py`:
-  - `embedding_task(result: dict)` - receives output from ingestion task
-  - Routed to `embedding_queue`, consumed by Embedding Workers
-  - Updates job status to "processing - embedding"
-  - Fetches chunks from MongoDB using job_id
-  - Generates embeddings for each chunk (using existing embedding service or API)
-  - Stores embeddings back to MongoDB (update chunk documents with embedding field)
-  - On success: Queue `indexing_task` to `indexing_queue` with chunk IDs
-  - On failure: Update job status to "failed" with error details
-  - Returns: `{job_id, chunk_ids, embeddings_count}` for next task
-
-**8. Task 3 - Indexing Task (indexing_queue)**:
-- [ ] Create `src/rag_ingestion_api/tasks/indexing_task.py`:
-  - `indexing_task(result: dict)` - receives output from embedding task
-  - Routed to `indexing_queue`, consumed by Indexing Workers
-  - Updates job status to "processing - indexing"
-  - Fetches chunks with embeddings from MongoDB
-  - Indexes embeddings to vector database (using existing indexing service or API)
-  - Updates job status to "completed"
-  - Sends webhook notification if `callback_url` provided
-  - Webhook payload includes: job_id, status, stats (chunks_created, embeddings_generated, vectors_indexed, total_time)
-  - On failure: Update job status to "failed" with error details
-  - Returns: `{job_id, status: "completed"}` as final result
-
-**9. Custom Exception Classes**:
+**7. Custom Exception Classes**:
 - [ ] Create `src/rag_ingestion_api/exceptions.py`:
   - `ExtractionError` (base class for extraction failures)
   - `UnsupportedFormatError` (invalid file format)
   - `CorruptedFileError` (cannot parse document)
   - `ChunkingError` (chunking failure)
   - `EmbeddingError` (embedding generation failure)
-  - `IndexingError` (vector indexing failure)
+  - `IndexingError` (vector indexing failure in MongoDB)
   - `ObjectStorageError` (Blob/GCS storage failure)
-  - `MongoDBError` (MongoDB chunk storage failure)
-  - `VectorDBError` (Vector database failure)
+  - `MongoDBError` (MongoDB storage and vector operations failure)
 
-**10. Error Handling & Retry Logic**:
-- [ ] Implement retry logic for transient errors (per task):
-  - Object Storage failures: 3 retries with exponential backoff (ingestion task)
-  - MongoDB failures: 3 retries with exponential backoff (all tasks)
-  - Network errors: 3 retries (all tasks)
-  - Embedding API failures: 3 retries with backoff (embedding task)
-  - Vector DB failures: 3 retries with backoff (indexing task)
-  - Rate limiting: retry with backoff (all tasks)
+**8. Error Handling & Retry Logic**:
+- [ ] Implement retry logic for transient errors:
+  - Object Storage failures: 3 retries with exponential backoff
+  - MongoDB failures: 3 retries with exponential backoff
+  - Network errors: 3 retries
+  - Rate limiting: retry with backoff
 - [ ] Non-retryable errors logged and job marked as failed:
-  - Unsupported format, corrupted file, invalid config (ingestion task)
-  - Malformed embedding data (embedding task)
-  - Invalid vector dimensions (indexing task)
+  - Unsupported format, corrupted file, invalid config (extraction stage)
+  - Malformed embedding data (embedding stage)
+  - Invalid vector dimensions (indexing stage)
 - [ ] Error details stored in job status:
   - error_message, error_type, failed_at timestamp, failed_stage
-- [ ] Stage-specific rollback: Each task handles its own cleanup on failure
+- [ ] Stage-specific progress tracking: Job status includes current stage
 - [ ] Performance metrics logged per stage (extraction time, chunking time, embedding time, indexing time, total time)
 
-**11. Testing**:
-- [ ] Unit tests with mocked Object Storage, extractors, chunkers, embedding service, indexing service, and MongoDB
-- [ ] Integration tests with real Celery, Redis, Object Storage, MongoDB, and task chaining
-- [ ] Test task chaining behavior (ingest → embed → index)
-- [ ] Test independent task failure and retry (each stage can fail independently)
-- [ ] Test webhook notifications (sent only from final indexing task)
-- [ ] Test error scenarios for each exception type in each task
+**9. Testing**:
+- [ ] Unit tests with mocked Object Storage, extractors, chunkers, embedding code, indexing code, and MongoDB
+- [ ] Integration tests with real Celery, Redis, Object Storage, and MongoDB
+- [ ] Test complete pipeline execution (extract → chunk → embed → index)
+- [ ] Test stage-specific failure and retry (each stage can fail independently)
+- [ ] Test webhook notifications (sent after completion)
+- [ ] Test error scenarios for each exception type at each stage
 - [ ] Test retry behavior for transient vs permanent errors per stage
-- [ ] Test queue routing (tasks go to correct queues)
 - [ ] Test coverage >80%
 
-**12. Documentation**:
-- [ ] Running three worker types locally for v2/ingestion
-- [ ] Task architecture and chained processing (ingest → embed → index)
+**10. Documentation**:
+- [ ] Running unified worker locally for v2/ingestion
+- [ ] Task architecture and pipeline stages (extract → chunk → embed → index)
 - [ ] Error handling and retry logic per stage
-- [ ] Queue configuration and routing
+- [ ] Embedding and indexing code runs inside worker pods
+- [ ] MongoDB as vector database
 
 **Dependencies**: Story 1 (Object Storage), Story 2 (Extraction Layer), Story 3 (Chunking Layer with Chunk models)
 
@@ -390,7 +369,7 @@ Implement complete task processing layer including Celery configuration for thre
 **Story Points**: 10
 
 **Description**:
-Implement complete REST API layer for v2/ingestion including POST /v2/ingestion for job submission and GET /v2/ingestion/{knowledge_ingestion_task_id} for status queries. The API endpoint ONLY validates metadata, uploads documents to Object Storage, queues the first task, and returns 202 immediately. All processing (extract, chunk, embed, index) happens asynchronously in separate worker pools. Includes request/response validation and file upload handling.
+Implement complete REST API layer for v2/ingestion including POST /v2/ingestion for job submission and GET /v2/ingestion/{knowledge_ingestion_task_id} for status queries. The API endpoint ONLY validates metadata, uploads documents to Object Storage, queues the unified task, and returns 202 immediately. All processing (extract, chunk, embed, index) happens asynchronously in unified worker pods. Includes request/response validation and file upload handling.
 
 **Acceptance Criteria**:
 
@@ -433,9 +412,9 @@ Implement complete REST API layer for v2/ingestion including POST /v2/ingestion 
     - Generate unique `job_id` (UUID4)
     - Upload file to Object Storage (Azure Blob or GCS) permanently
     - Create job in Redis with status "queued" using `JobStatusManager`
-    - Queue `ingest_document_task` to `ingest_queue` (first task in chain)
+    - Queue `ingest_document_task` to `ingest_queue` (unified task handles complete pipeline)
     - Return 202 Accepted immediately with `JobResponse` (job_id, status, submitted_at, filename, knowledge_set_id)
-    - **NO extraction, chunking, embedding, or indexing happens in API** - all processing is asynchronous in workers
+    - **NO extraction, chunking, embedding, or indexing happens in API** - all processing is asynchronous in unified worker pods
   - Success response:
     - 202 Accepted: Job queued successfully with `JobResponse` (task_id, status, submitted_at, filename, knowledge_set_id)
   - Error responses:
@@ -537,48 +516,31 @@ Complete deployment layer including comprehensive API documentation, Kubernetes 
 
 **2. Kubernetes Deployments**:
 - [ ] Deploy new v2/ingestion API code (no changes to API pod deployment configuration, v1 endpoints remain unchanged)
-- [ ] Create Ingestion Worker deployment (Celery):
-  - Queue: `ingest_queue` (extract + chunk + store)
+- [ ] Create Unified Ingestion Worker deployment (Celery):
+  - Queue: `ingest_queue` (complete pipeline: extract + chunk + embed + index)
   - Replicas: 2-10 with HPA based on queue length
-  - Resource requests: CPU 1000m, Memory 2Gi
-  - Resource limits: CPU 2000m, Memory 4Gi
-  - Object Storage access (Azure Blob or GCS)
-  - MongoDB connection string configured (existing infrastructure)
-  - Handles extraction and chunking stages
-- [ ] Create Embedding Worker deployment (Celery):
-  - Queue: `embedding_queue` (generate embeddings)
-  - Replicas: 2-10 with HPA based on queue length
-  - Resource requests: CPU 2000m, Memory 4Gi (more resources for ML workload)
+  - Resource requests: CPU 2000m, Memory 4Gi (higher resources for complete pipeline)
   - Resource limits: CPU 4000m, Memory 8Gi
-  - MongoDB connection string configured
-  - Handles embedding generation stage
-- [ ] Create Indexing Worker deployment (Celery):
-  - Queue: `indexing_queue` (index to vector DB)
-  - Replicas: 2-10 with HPA based on queue length
-  - Resource requests: CPU 500m, Memory 1Gi
-  - Resource limits: CPU 1000m, Memory 2Gi
-  - MongoDB and Vector DB connection configured
-  - Handles indexing stage
+  - Object Storage access (Azure Blob or GCS)
+  - MongoDB connection string configured (existing infrastructure, serves as vector DB)
+  - Embedding and indexing code runs inside worker pods
+  - Handles all stages: extraction, chunking, embedding, and indexing
 - [ ] Update ConfigMap with new environment variables:
   - Object Storage configuration (Blob/GCS)
   - MongoDB settings reference (existing: MONGODB_CONNECTION_STRING, MONGODB_DATABASE, MONGODB_CHUNKS_COLLECTION)
   - Redis configuration (Celery broker and job status)
   - Extraction, chunking, embedding, and indexing defaults
-  - Vector DB configuration
 - [ ] Update Secrets for:
   - Azure Blob Storage credentials
   - GCS service account credentials
   - MongoDB credentials (existing)
-  - Vector DB credentials
 - [ ] HPA scaling rules:
-  - Ingestion workers: scale up at >10 messages in ingest_queue per worker
-  - Embedding workers: scale up at >5 messages in embedding_queue per worker (ML tasks are heavier)
-  - Indexing workers: scale up at >10 messages in indexing_queue per worker
+  - Unified Ingestion workers: scale up at >10 messages in ingest_queue per worker
   - Scale down after 5 minutes of low queue depth
 - [ ] Deployment scripts for AKS and GKE
 - [ ] Smoke test on staging environment (verify full pipeline: upload → extract → chunk → embed → index)
 - [ ] Rollout plan and rollback procedure documented
-- [ ] Note: Three separate worker deployments (chained architecture)
+- [ ] Note: Single unified worker deployment (simplified architecture)
 
 **3. Monitoring and Metrics**:
 - [ ] Add metrics to existing `/metrics` endpoint:
@@ -589,26 +551,25 @@ Complete deployment layer including comprehensive API documentation, Kubernetes 
   - `v2_ingest_embeddings_generated_total` - counter
   - `v2_ingest_vectors_indexed_total` - counter
   - `v2_ingest_errors_total{stage, error_type}` - counter (stage: extraction, chunking, embedding, indexing)
-  - `v2_ingest_queue_length{queue}` - gauge (ingest_queue, embedding_queue, indexing_queue)
+  - `v2_ingest_queue_length{queue}` - gauge (ingest_queue - single queue)
   - `v2_ingest_file_size_bytes` - histogram
   - `v2_ingest_object_storage_uploads_total{cloud}` - counter (azure, gcp)
-  - `v2_ingest_mongodb_writes_total{operation}` - counter (chunk_storage, embedding_storage)
-  - `v2_ingest_vectordb_operations_total{operation}` - counter (index, search)
-  - `v2_ingest_worker_utilization{worker_type}` - gauge (ingestion, embedding, indexing)
+  - `v2_ingest_mongodb_operations_total{operation}` - counter (chunk_storage, embedding_storage, vector_index, vector_search)
+  - `v2_ingest_worker_utilization` - gauge (unified ingestion workers)
 - [ ] Create Grafana dashboard `v2-ingest-pipeline.json`:
   - Job submission rate and status breakdown
   - Pipeline stage duration trends (extraction, chunking, embedding, indexing)
-  - Three queue depths (ingest, embedding, indexing) and worker utilization per type
+  - Single queue depth (ingest_queue) and unified worker utilization
   - Error rates by stage and type (extraction, chunking, embedding, indexing errors)
   - Throughput (documents/hour, chunks/hour, embeddings/hour, vectors indexed/hour)
-  - Object Storage, MongoDB, and Vector DB operation metrics
-  - Worker pool utilization (ingestion, embedding, indexing workers)
+  - Object Storage and MongoDB operation metrics (including vector operations)
+  - Worker pool utilization (unified ingestion workers)
 - [ ] Alert rules defined:
   - High error rate (>5% failed jobs per stage)
-  - Queue backlog (>100 pending jobs in any queue for >15min)
+  - Queue backlog (>100 pending jobs in ingest_queue for >15min)
   - Slow processing (>5min avg per stage)
-  - Object Storage, MongoDB, or Vector DB failures
-  - Worker pool underutilization or overload (per worker type)
+  - Object Storage or MongoDB failures (including vector operations)
+  - Worker pool underutilization or overload
 - [ ] Dashboard deployed to AKS and GKE monitoring stacks
 
 **4. Documentation**:
@@ -662,25 +623,26 @@ Implement Azure Document Intelligence as an alternative extraction library for a
 ## Summary
 
 **Total Stories**: 6 MVP stories + 1 backlog story
-**Estimated Story Points**: ~71 points for MVP (84 with backlog)
+**Estimated Story Points**: ~65 points for MVP (78 with backlog)
 **Estimated Timeline**: 4-6 sprints (8-12 weeks)
 
 **Architecture**: Layered approach with one story per layer, testing integrated into each story
 
 **Key Architecture Decisions**:
 - **New API Version**: v2/ingestion endpoints (v1 remains unchanged for existing users)
-- **API Only Dispatches**: FastAPI endpoint only validates, uploads to Object Storage, queues first task, returns 202 in <100ms
+- **API Only Dispatches**: FastAPI endpoint only validates, uploads to Object Storage, queues unified task, returns 202 in <100ms
 - **Simplified API**: Only 2 endpoints (POST /v2/ingestion, GET /v2/ingestion/{knowledge_ingestion_task_id})
 - **No Job Cancellation**: Removed DELETE endpoint for simpler implementation
-- **Three Worker Pools**: Separate worker types for ingestion, embedding, and indexing
-- **Three Queues**: `ingest_queue`, `embedding_queue`, `indexing_queue` for independent scaling
-- **Chained Processing**: Extract + Chunk → Embed → Index (three separate tasks)
-- **Independent Scaling**: Each worker pool scales based on its queue depth and resource utilization
-- **Hybrid Storage**: Object Storage (Blob/GCS) for documents, MongoDB for chunks and embeddings (74% cost savings)
+- **Single Worker Pool**: Unified workers handle complete pipeline (extract + chunk + embed + index)
+- **Single Queue**: `ingest_queue` for all ingestion tasks (simplified architecture)
+- **Unified Processing**: Single task handles complete pipeline inside worker pods
+- **Code Inside Workers**: Embedding and indexing code runs inside Celery worker pods in Kubernetes
+- **MongoDB as Vector DB**: MongoDB serves as both document store and vector database (no separate vector DB)
+- **Hybrid Storage**: Object Storage (Blob/GCS) for documents, MongoDB for chunks, embeddings, and vector indexes (74% cost savings)
 - **Separate MongoDB**: Each cloud environment has its own MongoDB instance for data isolation
 - **No Separate Cleaning**: Automatic in Unstructured library during extraction
 - **Single Chunking Strategy**: Per-job selection (not multiple strategies)
-- **Always-Running Workers**: Min 2 replicas per worker type (not scale-to-zero) for fast response
+- **Always-Running Workers**: Min 2 replicas (not scale-to-zero) for fast response
 - **Existing Infrastructure**: MongoDB connection settings already exist
 - **Testing Integrated**: Unit and integration tests part of each layer (no separate testing story)
 
@@ -688,13 +650,13 @@ Implement Azure Document Intelligence as an alternative extraction library for a
 - **Sprint 1**: Story 1 (Object Storage Layer) - 5 points
 - **Sprint 2**: Story 2 (Extraction Layer) - 13 points
 - **Sprint 3**: Story 3 (Chunking Layer) - 12 points
-- **Sprint 4**: Story 4 (Task Processing Layer + Chained Tasks) - 18 points
+- **Sprint 4**: Story 4 (Task Processing Layer + Unified Task) - 15 points
 - **Sprint 5**: Story 5 (API Layer + E2E Tests) - 10 points
-- **Sprint 6**: Story 6 (Deployment Layer + Three Worker Types) - 13 points
+- **Sprint 6**: Story 6 (Deployment Layer + Unified Worker) - 13 points
 
 **Alternative 2-week Sprint Breakdown** (if team has capacity for larger stories):
 - **Sprint 1**: Story 1 + Story 2 (Object Storage + Extraction) - 18 points
-- **Sprint 2**: Story 3 + Story 4 (Chunking + Chained Tasks) - 30 points
+- **Sprint 2**: Story 3 + Story 4 (Chunking + Unified Task) - 27 points
 - **Sprint 3**: Story 5 + Story 6 (API + E2E Tests + Deployment) - 23 points
 
 **Definition of Done**:
