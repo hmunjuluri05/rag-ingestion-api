@@ -33,7 +33,7 @@ The RAG Ingestion API is a scalable, multi-cloud document processing pipeline th
 ### Limitations of Current API
 
 1. **No Fault Recovery**: If a pod crashes mid-processing, the entire job is lost
-2. **Resource Contention**: Heavy ingestion jobs can impact API responsiveness for all endpoints
+2. **Resource Contention**: Heavy ingestion tasks can impact API responsiveness for all endpoints
 3. **Inefficient Scaling**: Must scale entire API pod even if only ingestion is heavy
 4. **Memory Constraints**: Large documents can exhaust pod memory
 5. **Limited Observability**: No visibility into which pipeline stage is slow
@@ -105,7 +105,7 @@ graph TB
 ```
 
 **Complete multi-cloud deployment architecture** showing:
-- **Client Layer**: Applications submit jobs via REST API with `knowledge_set_id` (references existing Knowledge Set entity)
+- **Client Layer**: Applications submit tasks via REST API with `knowledge_set_id` (references existing Knowledge Set entity)
 - **API Layer**: FastAPI pods (1-2 replicas) deployed identically on both Azure and GCP
   - **API Responsibility**: ONLY validates metadata, uploads document to Object Storage, queues task, returns 202 immediately
   - **No Processing in API**: All heavy processing happens asynchronously in workers
@@ -129,7 +129,7 @@ graph TB
   4. Ingestion worker extracts+cleans text, chunks it, stores chunks to MongoDB
   5. Worker runs embedding code (inside worker pod) to generate and store embeddings to MongoDB
   6. Worker runs indexing code (inside worker pod) to create vector indexes in MongoDB
-  7. Worker updates job status to completed
+  7. Worker updates task status to completed
 - **Multi-Cloud**: Identical architecture deployed on Azure (AKS + Redis + Blob + MongoDB) and GCP (GKE + Memorystore + GCS + MongoDB)
 
 **Key Design Decisions:**
@@ -159,35 +159,35 @@ sequenceDiagram
     Client->>API: POST /v2/ingestion (multipart file upload)
     API->>API: Validate metadata against Knowledge Set schema
     API->>BlobStorage: Upload document file permanently
-    API->>Redis: Queue ingest_task(job_id, file_path, config)
-    API->>Redis: Set job status: queued
-    API-->>Client: 202 {job_id, status: queued}
+    API->>Redis: Queue ingest_task(task_id, file_path, config)
+    API->>Redis: Set task status: queued
+    API-->>Client: 202 {task_id, status: queued}
     Note over API,Client: API returns immediately!<br/>No processing in API.
 
     Redis->>Worker: Consume ingest_task from ingest_queue
-    Worker->>Redis: Update job status: processing - extracting
+    Worker->>Redis: Update task status: processing - extracting
     Worker->>BlobStorage: Download document
     Worker->>Worker: Extract text (with auto-cleaning)
-    Worker->>Redis: Update job status: processing - chunking
+    Worker->>Redis: Update task status: processing - chunking
     Worker->>Worker: Split text into chunks with metadata
     Worker->>MongoDB: Store chunks
 
-    Worker->>Redis: Update job status: processing - embedding
+    Worker->>Redis: Update task status: processing - embedding
     Worker->>Worker: Run embedding code (inside worker pod)
     Worker->>MongoDB: Store embeddings
 
-    Worker->>Redis: Update job status: processing - indexing
+    Worker->>Redis: Update task status: processing - indexing
     Worker->>Worker: Run indexing code (inside worker pod)
     Worker->>MongoDB: Create vector indexes
 
-    Worker->>Redis: Set job status: completed
+    Worker->>Redis: Set task status: completed
 
     opt Webhook configured
-        Worker->>Client: POST callback_url {job_id, status: completed}
+        Worker->>Client: POST callback_url {task_id, status: completed}
     end
 
     Client->>API: GET /v2/ingestion/{knowledge_ingestion_task_id}
-    API->>Redis: Read job status
+    API->>Redis: Read task status
     API-->>Client: {task_id, status, chunks}
 
     Note over BlobStorage: Documents stored permanently<br/>for archival and reprocessing
@@ -216,7 +216,7 @@ End-to-end flow of a document ingestion request showing interactions between cli
 - FastAPI REST endpoints for ingestion and status
 - **Responsibility**: Validate metadata, upload to Object Storage, queue first task, return 202
 - **No Processing**: All heavy processing delegated to workers
-- Celery task dispatcher for async job submission
+- Celery task dispatcher for async task submission
 
 **Layer 2: Task Queue (Celery + Redis)**
 - Single queue: `ingest_queue` for all ingestion tasks
@@ -236,7 +236,7 @@ End-to-end flow of a document ingestion request showing interactions between cli
 **Layer 4: Storage (Cloud-specific with unified interface)**
 - Object Storage: Azure Blob Storage (AKS) / Google Cloud Storage (GKE)
 - Task Broker/Backend: Azure Cache for Redis (AKS) / GCP Memorystore Redis (GKE)
-- Job State: Redis for task status and progress tracking
+- Task State: Redis for task status and progress tracking
 - MongoDB (Vector Database): Separate instance within each cloud for chunks, embeddings, and vector indexes
 
 ---
@@ -245,7 +245,7 @@ End-to-end flow of a document ingestion request showing interactions between cli
 
 ### RESTful Endpoints
 
-#### 1. Submit Ingestion Job
+#### 1. Submit Ingestion Task
 
 **POST** `/v2/ingestion`
 
@@ -255,7 +255,7 @@ End-to-end flow of a document ingestion request showing interactions between cli
 - ✅ Uploads document to Object Storage (Azure Blob / GCS)
 - ✅ Queues `ingest_task` to `ingest_queue`
 - ✅ Returns **202 Accepted** immediately (typically <100ms)
-- ❌ **NO processing happens in API** - all extraction, chunking, embedding, and indexing happen asynchronously in separate worker pools
+- ❌ **NO processing happens in API** - all extraction, chunking, embedding, and indexing happen asynchronously in unified worker pods
 
 **Content-Type:** `multipart/form-data`
 
@@ -266,7 +266,7 @@ End-to-end flow of a document ingestion request showing interactions between cli
 | `file` | File (UploadFile) | **Yes** | Document file to process (PDF, DOCX, HTML, etc.) |
 | `knowledge_set_id` | String (UUID) | **Yes** | ID of the existing Knowledge Set to which this document belongs |
 | `config` | JSON string | No | Processing configuration (chunking, embedding with metadata) |
-| `callback_url` | String (URL) | No | Webhook URL for job completion notification |
+| `callback_url` | String (URL) | No | Webhook URL for task completion notification |
 
 **Request Example (cURL):**
 
@@ -281,7 +281,7 @@ curl -X POST "https://api.example.com/v2/ingestion" \
   -F "file=@document.pdf" \
   -F "knowledge_set_id=550e8400-e29b-41d4-a716-446655440000" \
   -F 'config={"chunking":{"strategy":"recursive","chunk_size":512,"chunk_overlap":50},"embedding":{"metadata":{"title":"Q4 Financial Report","author":"John Doe","department":"Finance"}}}' \
-  -F "callback_url=https://example.com/webhook/job-completed"
+  -F "callback_url=https://example.com/webhook/task-completed"
 ```
 
 **Important Notes:**
@@ -314,7 +314,7 @@ with open("document.pdf", "rb") as f:
                 }
             }
         }),
-        'callback_url': 'https://example.com/webhook/job-completed'
+        'callback_url': 'https://example.com/webhook/task-completed'
     }
 
     response = requests.post(url, files=files, data=data)
@@ -382,7 +382,7 @@ with open("document.pdf", "rb") as f:
 
 **500 Internal Server Error** - Object Storage failure, queue failure
 
-#### 2. Get Job Status
+#### 2. Get Task Status
 
 **GET** `/v2/ingestion/{knowledge_ingestion_task_id}`
 
@@ -533,15 +533,15 @@ class IngestionConfig(BaseModel):
     class Config:
         extra = "forbid"
 
-class JobResponse(BaseModel):
-    job_id: str
+class TaskResponse(BaseModel):
+    task_id: str
     status: str
     submitted_at: str
     filename: str
     knowledge_set_id: str
 
-class JobStatusResponse(BaseModel):
-    job_id: str
+class TaskStatusResponse(BaseModel):
+    task_id: str
     status: str
     progress: Dict[str, Any]
     stats: Dict[str, Any]
@@ -562,7 +562,7 @@ class JobStatusResponse(BaseModel):
 
 | Layer | Technology | Purpose |
 |-------|------------|---------|
-| **API Layer** | REST API Framework | Request handling, job submission, status queries |
+| **API Layer** | REST API Framework | Request handling, task submission, status queries |
 | **Data Validation** | Pydantic | Runtime validation, API schemas, configuration models |
 | **Task Queue** | Distributed Task Queue | Asynchronous job processing, task chaining, automatic retries |
 | **Message Broker** | In-Memory Data Store | Task queue broker and result backend |
@@ -769,7 +769,7 @@ class JobStatusResponse(BaseModel):
 10. Store embeddings to MongoDB
 11. Update status: "processing - indexing"
 12. Run indexing code (inside worker pod) to create vector indexes in MongoDB
-13. Update job status to "completed"
+13. Update task status to "completed"
 14. Send webhook notification (if configured)
 
 **Benefits:**
@@ -788,7 +788,7 @@ class JobStatusResponse(BaseModel):
 
 **Failure Recovery:**
 - Task-level retries
-- Job status tracking
+- Task status tracking
 - Manual replay capability
 
 ---
@@ -843,7 +843,7 @@ class JobStatusResponse(BaseModel):
 
 ### Dashboards (Grafana)
 
-1. **Pipeline Health**: Success rate, error rate per stage, job completion rate
+1. **Pipeline Health**: Success rate, error rate per stage, task completion rate
 2. **Performance**: Task processing time, throughput per stage, queue depths
 3. **Celery Metrics**: Worker utilization, task success/failure rates, retry counts
 4. **Infrastructure**: Redis memory usage, worker pod CPU/memory, storage operations
@@ -858,7 +858,7 @@ class JobStatusResponse(BaseModel):
 **Objective:** Build foundational two-stage pipeline
 
 **Deliverables:**
-- REST API for job submission and status tracking
+- REST API for task submission and status tracking
 - Extract and chunk pipeline stages
 - Cloud storage integration
 - Basic monitoring and logging
@@ -915,7 +915,7 @@ class JobStatusResponse(BaseModel):
 - Automatic recovery: < 1 minute for worker failures
 
 **Scalability Targets:**
-- Support 1000+ concurrent ingestion jobs
+- Support 1000+ concurrent ingestion tasks
 - Handle documents up to 100MB
 - Auto-scale from 10 to 100+ workers based on load
 - Maintain latency targets under 10x normal load
@@ -963,7 +963,7 @@ This design provides a **multi-cloud, scalable RAG ingestion pipeline** with:
 - MongoDB serves as both document store and vector database
 
 **Operational Excellence:**
-- REST API for job management (FastAPI + Pydantic)
+- REST API for task management (FastAPI + Pydantic)
 - Automatic request validation with Pydantic models
 - Auto-generated OpenAPI/Swagger documentation
 - Real-time status tracking
